@@ -1,0 +1,95 @@
+:root {
+  --page-bg: #ffffff;
+  --page-text: #000000;
+  --page-muted: #444444;
+  --panel-text: #000000;
+  --panel-muted: #444444;
+  --panel-border: #999999;
+  --panel-shadow: none;
+  --display: "Times New Roman", Times, serif;
+  --mono: "Courier New", Courier, monospace;
+  --body: "Times New Roman", Times, serif;
+  font: 16px/1.35 var(--body);
+  color: var(--page-text);
+  background: var(--page-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 8px;
+  min-width: 320px;
+  background: #ffffff;
+  color: #000000;
+}
+
+#root {
+  max-width: 1080px;
+  margin: 0 auto;
+  min-height: 100svh;
+  box-sizing: border-box;
+  padding: 8px 8px 24px;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-family: var(--display);
+  font-size: 2rem;
+  line-height: 1.15;
+  font-weight: 700;
+}
+
+h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 1.35rem;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+p {
+  margin: 0 0 0.75rem;
+}
+
+code {
+  font-family: var(--mono);
+}
+
+a {
+  color: #0000ee;
+  text-decoration: underline;
+}
+
+a:visited {
+  color: #0000ee;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #999999;
+  background: #efefef;
+  color: #000000;
+}
+
+::selection {
+  background: #c6d9ff;
+  color: #000000;
+}
+
+@media (max-width: 720px) {
+  #root {
+    padding: 4px 4px 18px;
+  }
+}
