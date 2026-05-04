@@ -1,4 +1,4 @@
-const { initDb, getAllRollingMetrics } = require("../server/db");
+const { initDb, getAllConcurrentMetrics } = require("../server/db");
 const { buildConcurrentPredictionContext } = require("../server/dashboard");
 
 function summarizeErrors(rows, actualKey, predictedKey) {
@@ -38,7 +38,7 @@ function summarizeErrors(rows, actualKey, predictedKey) {
 }
 
 function buildConcurrentSummary() {
-  const context = buildConcurrentPredictionContext(getAllRollingMetrics());
+  const context = buildConcurrentPredictionContext(getAllConcurrentMetrics());
   const latestTimestamp = Date.parse(context.records[context.records.length - 1]?.sampledAt || 0);
   const lowerBound = latestTimestamp - 365 * 24 * 60 * 60 * 1000;
   const recentRecords = context.records.filter(

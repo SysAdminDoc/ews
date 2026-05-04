@@ -1,7 +1,7 @@
 const {
   initDb,
   getDb,
-  getAllRollingMetrics,
+  getAllConcurrentMetrics,
 } = require("../server/db");
 const {
   buildConcurrentPredictionContext,
@@ -21,12 +21,12 @@ function computeMedian(sortedValues) {
 
 initDb();
 const db = getDb();
-const concurrentContext = buildConcurrentPredictionContext(getAllRollingMetrics());
+const concurrentContext = buildConcurrentPredictionContext(getAllConcurrentMetrics());
 const rows = db
   .prepare(`
-    SELECT sampled_at AS sampledAt, rolling_24h_count AS rolling24hCount, concurrent_count AS concurrentCount
-    FROM rolling_metrics
-    WHERE sampled_at >= datetime((SELECT max(sampled_at) FROM rolling_metrics), ?)
+    SELECT sampled_at AS sampledAt, concurrent_count AS concurrentCount
+    FROM concurrent_metrics
+    WHERE sampled_at >= datetime((SELECT max(sampled_at) FROM concurrent_metrics), ?)
     ORDER BY sampled_at ASC
   `)
   .all("-7 days");

@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 
 from parse_heatmap import parse_heatmap
+from db_migrations import migrate_schema
 
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -50,6 +51,7 @@ def open_db(path):
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.executescript(SCHEMA_PATH.read_text("utf8"))
+    migrate_schema(connection)
     return connection
 
 
@@ -173,7 +175,7 @@ def recent_sample_count(connection, latest_slot):
     row = connection.execute(
         """
         SELECT COUNT(*) AS sample_count
-        FROM rolling_metrics
+        FROM concurrent_metrics
         WHERE sampled_at >= ?
           AND sampled_at < ?
         """,
@@ -189,7 +191,7 @@ def slot_already_ingested(connection, slot):
     row = connection.execute(
         """
         SELECT COUNT(*) AS sample_count
-        FROM rolling_metrics
+        FROM concurrent_metrics
         WHERE sampled_at >= ?
           AND sampled_at < ?
         """,
@@ -219,37 +221,11 @@ def ensure_slot_heatmap(slot):
     }
 
 
-def compute_rolling_count(connection, sampled_at_iso):
-    sampled_at = dt.datetime.fromisoformat(sampled_at_iso)
-    lower_bound_iso = (sampled_at - dt.timedelta(hours=24)).isoformat()
-    row = connection.execute(
-        """
-        SELECT COUNT(DISTINCT hex) AS rolling_count
-        FROM (
-          SELECT hex
-          FROM observations
-          WHERE observed_at >= ?
-            AND observed_at <= ?
-            AND is_airborne = 1
-            AND source = ?
-          UNION
-          SELECT hex
-          FROM recent_history_activity
-          WHERE last_observed_at >= ?
-            AND last_observed_at <= ?
-        )
-        """,
-        (lower_bound_iso, sampled_at_iso, SOURCE, lower_bound_iso, sampled_at_iso),
-    ).fetchone()
-
-    return int(row["rolling_count"] or 0)
-
-
 def current_snapshot_summary(connection, sampled_at_iso):
     metrics_row = connection.execute(
         """
-        SELECT rolling_24h_count, concurrent_count
-        FROM rolling_metrics
+        SELECT concurrent_count
+        FROM concurrent_metrics
         WHERE sampled_at = ?
         """,
         (sampled_at_iso,),
@@ -268,7 +244,6 @@ def current_snapshot_summary(connection, sampled_at_iso):
     return {
         "matched_count": int(snapshot_row["matched_count"] or 0),
         "airborne_count": int(snapshot_row["airborne_count"] or 0),
-        "rolling_24h_count": int(metrics_row["rolling_24h_count"] or 0) if metrics_row else 0,
         "concurrent_count": int(metrics_row["concurrent_count"] or 0) if metrics_row else 0,
     }
 
@@ -402,23 +377,20 @@ def ingest_slot(connection, tracked_by_hex, latest_slice, replace_live_snapshot=
             observation_rows,
         )
 
-    rolling_24h_count = compute_rolling_count(connection, sampled_at_iso)
     connection.execute(
         """
-        INSERT INTO rolling_metrics (sampled_at, rolling_24h_count, concurrent_count)
-        VALUES (?, ?, ?)
+        INSERT INTO concurrent_metrics (sampled_at, concurrent_count)
+        VALUES (?, ?)
         ON CONFLICT(sampled_at) DO UPDATE SET
-          rolling_24h_count = excluded.rolling_24h_count,
           concurrent_count = excluded.concurrent_count
         """,
-        (sampled_at_iso, rolling_24h_count, len(airborne_hexes)),
+        (sampled_at_iso, len(airborne_hexes)),
     )
 
     return {
         "sampled_at": sampled_at_iso,
         "matched_count": len(snapshot_rows),
         "airborne_count": len(airborne_hexes),
-        "rolling_24h_count": rolling_24h_count,
         "concurrent_count": len(airborne_hexes),
     }
 
@@ -443,7 +415,6 @@ def main():
             summary = current_snapshot_summary(connection, sampled_at) if sampled_at else {
                 "matched_count": 0,
                 "airborne_count": 0,
-                "rolling_24h_count": 0,
                 "concurrent_count": 0,
             }
             print(
@@ -458,7 +429,6 @@ def main():
                         "usedCache": True,
                         "matchedCount": summary["matched_count"],
                         "airborneCount": summary["airborne_count"],
-                        "rolling24hCount": summary["rolling_24h_count"],
                         "concurrentCount": summary["concurrent_count"],
                     }
                 )
@@ -513,7 +483,6 @@ def main():
                     "matchedCount": latest_result["matched_count"],
                     "airborneCount": latest_result["airborne_count"],
                     "concurrentCount": latest_result["concurrent_count"],
-                    "rolling24hCount": latest_result["rolling_24h_count"],
                 }
             ),
         )
@@ -531,7 +500,6 @@ def main():
                     "usedCache": selected_used_cache,
                     "matchedCount": latest_result["matched_count"],
                     "airborneCount": latest_result["airborne_count"],
-                    "rolling24hCount": latest_result["rolling_24h_count"],
                     "concurrentCount": latest_result["concurrent_count"],
                 }
             )

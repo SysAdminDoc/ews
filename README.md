@@ -1,6 +1,6 @@
 # Early Warning System
 
-Web app for monitoring business-jet cohorts against rolling and calendar-learned baselines.
+Web app for monitoring business-jet cohorts against concurrent-activity and calendar-learned baselines.
 
 This project now supports both local development and a low-cost public deployment model:
 

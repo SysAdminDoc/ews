@@ -11,6 +11,8 @@ import urllib.request
 import zipfile
 from collections import Counter
 
+from db_migrations import migrate_schema
+
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
@@ -99,6 +101,7 @@ def open_db(path):
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.executescript(SCHEMA_PATH.read_text("utf8"))
+    migrate_schema(connection)
     return connection
 
 
@@ -108,7 +111,7 @@ def purge_demo_state(connection):
     connection.execute("DELETE FROM live_snapshot WHERE source = 'demo'")
 
     if deleted:
-        connection.execute("DELETE FROM rolling_metrics")
+        connection.execute("DELETE FROM concurrent_metrics")
         connection.execute("DELETE FROM daily_metrics")
 
 

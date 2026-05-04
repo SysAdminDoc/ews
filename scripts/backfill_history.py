@@ -9,9 +9,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections import Counter, defaultdict, deque
-
 from parse_heatmap import parse_heatmap, str_to_point
+from db_migrations import migrate_schema
 
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -20,7 +19,6 @@ CONFIG_DIR = ROOT_DIR / "config"
 DB_PATH = DATA_DIR / "ews.sqlite"
 SCHEMA_PATH = ROOT_DIR / "schema.sql"
 CACHE_DIR = DATA_DIR / "cache" / "adsbx"
-RECENT_HISTORY_TAIL_HOURS = 48
 
 
 def parse_args():
@@ -98,6 +96,7 @@ def open_db(path):
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.executescript(SCHEMA_PATH.read_text("utf8"))
+    migrate_schema(connection)
     return connection
 
 
@@ -135,7 +134,7 @@ def purge_demo_state(connection):
     connection.execute("DELETE FROM live_snapshot WHERE source = 'demo'")
 
     if deleted:
-        connection.execute("DELETE FROM rolling_metrics")
+        connection.execute("DELETE FROM concurrent_metrics")
         connection.execute("DELETE FROM daily_metrics")
 
 
@@ -193,14 +192,6 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
     range_start_iso = f"{start_date.isoformat()}T00:00:00+00:00"
     range_end_iso = f"{end_date.isoformat()}T00:00:00+00:00"
     recompute_start = dt.datetime.combine(start_date, dt.time.min, tzinfo=dt.timezone.utc)
-    today = dt.datetime.now(dt.timezone.utc).date()
-    refresh_recent_activity = end_date >= today - dt.timedelta(days=2)
-    recent_cutoff = None
-    if refresh_recent_activity:
-        recent_cutoff = dt.datetime.combine(end_date, dt.time.min, tzinfo=dt.timezone.utc) - dt.timedelta(
-            hours=RECENT_HISTORY_TAIL_HOURS
-        )
-
     connection.execute(
         """
         DELETE FROM observations
@@ -212,7 +203,7 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
     )
     connection.execute(
         """
-        DELETE FROM rolling_metrics
+        DELETE FROM concurrent_metrics
         WHERE sampled_at >= ?
           AND sampled_at < ?
         """,
@@ -226,34 +217,25 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
         """,
         (start_date.isoformat(), end_date.isoformat()),
     )
-    if refresh_recent_activity:
-        connection.execute("DELETE FROM recent_history_activity")
-
     total_files = (end_date - start_date).days * 48
     processed_files = 0
-    window = deque()
-    active_counter = Counter()
-    rolling_rows = []
-    recent_activity = {}
+    concurrent_rows = []
     daily_rows_by_day = {}
     current_day = None
     day_unique = set()
     day_peak_concurrent = 0
-    day_peak_rolling = 0
     day_sample_count = 0
 
     def flush_day(day_value):
-        nonlocal day_unique, day_peak_concurrent, day_peak_rolling, day_sample_count
+        nonlocal day_unique, day_peak_concurrent, day_sample_count
         daily_rows_by_day[day_value] = {
             "day": day_value,
             "unique_airborne_count": len(day_unique),
             "peak_concurrent_count": day_peak_concurrent,
-            "peak_rolling_24h_count": day_peak_rolling,
             "sample_count": day_sample_count,
         }
         day_unique = set()
         day_peak_concurrent = 0
-        day_peak_rolling = 0
         day_sample_count = 0
 
     for day_offset in range((end_date - start_date).days):
@@ -289,16 +271,6 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
 
                     hex_value = telemetry.hex.lower()
                     slice_active_hexes.add(hex_value)
-                    if refresh_recent_activity and heatmap_slice.timestamp >= recent_cutoff:
-                        tracked_entry = tracked_by_hex.get(hex_value)
-                        existing_timestamp = recent_activity.get(hex_value, {}).get("last_observed_at")
-                        observed_at_iso = heatmap_slice.timestamp.isoformat()
-                        if existing_timestamp is None or observed_at_iso > existing_timestamp:
-                            recent_activity[hex_value] = {
-                                "hex": hex_value,
-                                "registration": tracked_entry.get("registration") if tracked_entry else None,
-                                "last_observed_at": observed_at_iso,
-                            }
 
                 if not slice_active_hexes:
                     continue
@@ -313,23 +285,10 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
                 continue
 
             timestamp = file_timestamp
-            while window and timestamp - window[0][0] > dt.timedelta(hours=24):
-                _, departing_hexes = window.popleft()
-                for hex_value in departing_hexes:
-                    active_counter[hex_value] -= 1
-                    if active_counter[hex_value] <= 0:
-                        del active_counter[hex_value]
-
-            window.append((timestamp, file_active_hexes))
-            for hex_value in file_active_hexes:
-                active_counter[hex_value] += 1
-
-            rolling_count = len(active_counter)
             if timestamp >= recompute_start:
-                rolling_rows.append(
+                concurrent_rows.append(
                     {
                         "sampled_at": timestamp.isoformat(),
-                        "rolling_24h_count": rolling_count,
                         "concurrent_count": file_peak_concurrent,
                     }
                 )
@@ -343,7 +302,6 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
 
             day_unique.update(file_active_hexes)
             day_peak_concurrent = max(day_peak_concurrent, file_peak_concurrent)
-            day_peak_rolling = max(day_peak_rolling, rolling_count)
             day_sample_count += 1
 
             if processed_files % 48 == 0:
@@ -352,13 +310,13 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
     if current_day is not None:
         flush_day(current_day)
 
-    if rolling_rows:
+    if concurrent_rows:
         connection.executemany(
             """
-            INSERT INTO rolling_metrics (sampled_at, rolling_24h_count, concurrent_count)
-            VALUES (:sampled_at, :rolling_24h_count, :concurrent_count)
+            INSERT INTO concurrent_metrics (sampled_at, concurrent_count)
+            VALUES (:sampled_at, :concurrent_count)
             """,
-            rolling_rows,
+            concurrent_rows,
         )
 
     final_daily_rows = []
@@ -371,7 +329,6 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
                     "day": day_value,
                     "unique_airborne_count": 0,
                     "peak_concurrent_count": 0,
-                    "peak_rolling_24h_count": 0,
                     "sample_count": 0,
                 },
             )
@@ -383,54 +340,16 @@ def ingest_metrics(connection, tracked_by_hex, start_date, end_date, skip_downlo
           day,
           unique_airborne_count,
           peak_concurrent_count,
-          peak_rolling_24h_count,
           sample_count
         ) VALUES (
           :day,
           :unique_airborne_count,
           :peak_concurrent_count,
-          :peak_rolling_24h_count,
           :sample_count
         )
         """,
         final_daily_rows,
     )
-
-    if refresh_recent_activity and recent_activity:
-        connection.executemany(
-            """
-            INSERT INTO recent_history_activity (
-              hex,
-              registration,
-              last_observed_at
-            ) VALUES (
-              :hex,
-              :registration,
-              :last_observed_at
-            )
-            """,
-            recent_activity.values(),
-        )
-
-
-def grouped_activity_rows(connection, range_start, range_end):
-    rows = connection.execute(
-        """
-        SELECT observed_at, hex
-        FROM observations
-        WHERE observed_at >= ?
-          AND observed_at < ?
-          AND is_airborne = 1
-        ORDER BY observed_at ASC, hex ASC
-        """,
-        (range_start.isoformat(), range_end.isoformat()),
-    ).fetchall()
-
-    grouped = defaultdict(set)
-    for row in rows:
-        grouped[row["observed_at"]].add(row["hex"])
-
-    return [(dt.datetime.fromisoformat(timestamp), hexes) for timestamp, hexes in sorted(grouped.items())]
 
 
 def main():

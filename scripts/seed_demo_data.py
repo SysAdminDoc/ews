@@ -5,6 +5,8 @@ import pathlib
 import random
 import sqlite3
 
+from db_migrations import migrate_schema
+
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
@@ -20,6 +22,7 @@ def open_db():
     ensure_directories()
     connection = sqlite3.connect(DB_PATH)
     connection.executescript(SCHEMA_PATH.read_text("utf8"))
+    migrate_schema(connection)
     return connection
 
 
@@ -39,7 +42,7 @@ def seed():
 
     connection.execute("DELETE FROM tracked_aircraft")
     connection.execute("DELETE FROM observations")
-    connection.execute("DELETE FROM rolling_metrics")
+    connection.execute("DELETE FROM concurrent_metrics")
     connection.execute("DELETE FROM daily_metrics")
     connection.execute("DELETE FROM live_snapshot")
 
@@ -55,7 +58,6 @@ def seed():
         day = (now - dt.timedelta(days=day_offset)).date()
         daily_unique = 8 + int(4 * random.random()) + (1 if day_offset % 17 == 0 else 0)
         peak_concurrent = max(2, int(daily_unique * 0.55))
-        peak_rolling = daily_unique + int(1 + random.random() * 2)
 
         connection.execute(
             """
@@ -63,23 +65,21 @@ def seed():
               day,
               unique_airborne_count,
               peak_concurrent_count,
-              peak_rolling_24h_count,
               sample_count
-            ) VALUES (?, ?, ?, ?, 48)
+            ) VALUES (?, ?, ?, 48)
             """,
-            (day.isoformat(), daily_unique, peak_concurrent, peak_rolling),
+            (day.isoformat(), daily_unique, peak_concurrent),
         )
 
         for sample_index in range(48):
             sampled_at = dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc) + dt.timedelta(minutes=30 * sample_index)
             concurrent = max(1, int(peak_concurrent * (0.45 + random.random() * 0.8)))
-            rolling = max(concurrent, peak_rolling - int(random.random() * 3))
             connection.execute(
                 """
-                INSERT INTO rolling_metrics (sampled_at, rolling_24h_count, concurrent_count)
-                VALUES (?, ?, ?)
+                INSERT INTO concurrent_metrics (sampled_at, concurrent_count)
+                VALUES (?, ?)
                 """,
-                (sampled_at.isoformat(), rolling, concurrent),
+                (sampled_at.isoformat(), concurrent),
             )
 
     live_positions = [

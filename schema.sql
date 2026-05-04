@@ -56,18 +56,8 @@ CREATE INDEX IF NOT EXISTS idx_observations_observed_at
 CREATE INDEX IF NOT EXISTS idx_observations_hex_time
   ON observations (hex, observed_at);
 
-CREATE TABLE IF NOT EXISTS recent_history_activity (
-  hex TEXT PRIMARY KEY,
-  registration TEXT,
-  last_observed_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_recent_history_activity_last_observed_at
-  ON recent_history_activity (last_observed_at);
-
-CREATE TABLE IF NOT EXISTS rolling_metrics (
+CREATE TABLE IF NOT EXISTS concurrent_metrics (
   sampled_at TEXT PRIMARY KEY,
-  rolling_24h_count INTEGER NOT NULL,
   concurrent_count INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -76,7 +66,6 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
   day TEXT PRIMARY KEY,
   unique_airborne_count INTEGER NOT NULL,
   peak_concurrent_count INTEGER NOT NULL,
-  peak_rolling_24h_count INTEGER NOT NULL,
   sample_count INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

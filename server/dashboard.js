@@ -2,7 +2,7 @@ const {
   getMetaValue,
   getConcurrentCount,
   getLiveAircraft,
-  getAllRollingMetrics,
+  getAllConcurrentMetrics,
   getTrackedAircraftCount,
   getTrackingSummary,
   areAllTrackedAircraftDemo,
@@ -902,7 +902,7 @@ function computeConcurrentPredictionModel(
   concurrentContext = null,
   options = {},
 ) {
-  const context = concurrentContext || buildConcurrentPredictionContext(getAllRollingMetrics(), options);
+  const context = concurrentContext || buildConcurrentPredictionContext(getAllConcurrentMetrics(), options);
   const referenceRecord = getNearestConcurrentRecord(context, referenceIso);
 
   if (referenceRecord) {
@@ -959,6 +959,7 @@ function parseSavedHeatmapStatus() {
 
 function buildStoredHeatmapStatus(overrides = {}) {
   const savedStatus = parseSavedHeatmapStatus() || {};
+  delete savedStatus.rolling24hCount;
   return {
     provider: HEATMAP_SOURCE,
     providerLabel: "ADS-B Exchange heatmap",
@@ -1003,8 +1004,8 @@ function buildDashboardPayload({
   const liveStatus = buildStoredHeatmapStatus(liveStatusOverride || {});
   const referenceIso = liveStatus.latestSampledAt || new Date().toISOString();
   const concurrentCount = getConcurrentCount(HEATMAP_SOURCE);
-  const rollingHistory = getAllRollingMetrics();
-  const concurrentContext = buildConcurrentPredictionContext(rollingHistory, concurrentPredictionOptions);
+  const concurrentHistory = getAllConcurrentMetrics();
+  const concurrentContext = buildConcurrentPredictionContext(concurrentHistory, concurrentPredictionOptions);
   const currentModel = computeConcurrentPredictionModel(
     referenceIso,
     concurrentCount,
@@ -1074,7 +1075,7 @@ function buildDashboardSnapshot({
   concurrentPredictionOptions = {},
 } = {}) {
   const trackedCount = getTrackedAircraftCount();
-  const hasAnyHistoricalData = getAllRollingMetrics().length > 0;
+  const hasAnyHistoricalData = getAllConcurrentMetrics().length > 0;
   const onlyDemoData = areAllTrackedAircraftDemo();
 
   if ((!trackedCount && !hasAnyHistoricalData) || onlyDemoData) {

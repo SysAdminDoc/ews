@@ -3,7 +3,6 @@ const Database = require("better-sqlite3");
 const { DB_PATH, SCHEMA_PATH, ensureDirectories } = require("./config");
 
 let database;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const AIRCRAFT_PATH_POINT_LIMIT = 6;
 
 function initDb() {
@@ -17,8 +16,67 @@ function initDb() {
   database.pragma("synchronous = NORMAL");
   database.pragma("foreign_keys = ON");
   database.exec(fs.readFileSync(SCHEMA_PATH, "utf8"));
+  migrateSchema(database);
 
   return database;
+}
+
+function tableColumns(db, tableName) {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName);
+  if (!table) {
+    return new Set();
+  }
+
+  return new Set(db.prepare(`PRAGMA table_info(${tableName})`).all().map((row) => row.name));
+}
+
+function migrateSchema(db) {
+  const rollingMetricColumns = tableColumns(db, "rolling_metrics");
+  if (rollingMetricColumns.size) {
+    if (rollingMetricColumns.has("sampled_at") && rollingMetricColumns.has("concurrent_count")) {
+      db.prepare(`
+        INSERT OR IGNORE INTO concurrent_metrics (sampled_at, concurrent_count, created_at)
+        SELECT sampled_at, concurrent_count, created_at
+        FROM rolling_metrics
+      `).run();
+    }
+
+    db.prepare("DROP TABLE rolling_metrics").run();
+  }
+
+  const dailyMetricColumns = tableColumns(db, "daily_metrics");
+  if (dailyMetricColumns.has("peak_rolling_24h_count")) {
+    db.exec(`
+      ALTER TABLE daily_metrics RENAME TO daily_metrics_legacy_rolling;
+      CREATE TABLE daily_metrics (
+        day TEXT PRIMARY KEY,
+        unique_airborne_count INTEGER NOT NULL,
+        peak_concurrent_count INTEGER NOT NULL,
+        sample_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT OR REPLACE INTO daily_metrics (
+        day,
+        unique_airborne_count,
+        peak_concurrent_count,
+        sample_count,
+        created_at
+      )
+      SELECT
+        day,
+        unique_airborne_count,
+        peak_concurrent_count,
+        sample_count,
+        created_at
+      FROM daily_metrics_legacy_rolling;
+      DROP TABLE daily_metrics_legacy_rolling;
+    `);
+  }
+
+  db.prepare("DROP INDEX IF EXISTS idx_recent_history_activity_last_observed_at").run();
+  db.prepare("DROP TABLE IF EXISTS recent_history_activity").run();
 }
 
 function getDb() {
@@ -83,227 +141,6 @@ function getTrackedAircraftEntries() {
       ORDER BY hex ASC
     `)
     .all();
-}
-
-function buildStats(row) {
-  const mean = Number(row?.mean_count ?? 0);
-  const meanSquare = Number(row?.mean_square_count ?? 0);
-  const variance = Math.max(0, meanSquare - mean * mean);
-
-  return {
-    sampleCount: Number(row?.sample_count ?? 0),
-    mean,
-    standardDeviation: Math.sqrt(variance),
-  };
-}
-
-function buildStatsFromValues(values) {
-  const sampleCount = values.length;
-  if (!sampleCount) {
-    return {
-      sampleCount: 0,
-      mean: 0,
-      standardDeviation: 0,
-    };
-  }
-
-  const mean = values.reduce((total, value) => total + value, 0) / sampleCount;
-  const meanSquare = values.reduce((total, value) => total + value * value, 0) / sampleCount;
-  const variance = Math.max(0, meanSquare - mean * mean);
-
-  return {
-    sampleCount,
-    mean,
-    standardDeviation: Math.sqrt(variance),
-  };
-}
-
-function getBaselineStats() {
-  const db = getDb();
-  const row = db
-    .prepare(`
-      SELECT
-        COUNT(*) AS sample_count,
-        AVG(rolling_24h_count) AS mean_count,
-        AVG(rolling_24h_count * rolling_24h_count) AS mean_square_count
-      FROM rolling_metrics
-    `)
-    .get();
-
-  return buildStats(row);
-}
-
-function getWeekdayBaselineStats(referenceIso) {
-  const db = getDb();
-  const row = db
-    .prepare(`
-      SELECT
-        COUNT(*) AS sample_count,
-        AVG(rolling_24h_count) AS mean_count,
-        AVG(rolling_24h_count * rolling_24h_count) AS mean_square_count
-      FROM rolling_metrics
-      WHERE strftime('%w', sampled_at) = strftime('%w', ?)
-    `)
-    .get(referenceIso);
-
-  return buildStats(row);
-}
-
-function getRecentWeekdayBaselineStats(referenceIso, weeks = 4, maxDifferenceHours = 12) {
-  const referenceDate = new Date(referenceIso);
-  const samples = [];
-
-  for (let weekOffset = 1; weekOffset <= weeks; weekOffset += 1) {
-    const targetIso = new Date(referenceDate.getTime() - weekOffset * 7 * DAY_MS).toISOString();
-    const match = getRollingMetricNear(targetIso, maxDifferenceHours);
-    if (!match) {
-      continue;
-    }
-
-    samples.push({
-      targetAt: targetIso,
-      sampledAt: match.sampledAt,
-      rolling24hCount: match.rolling24hCount,
-      differenceSeconds: match.differenceSeconds,
-    });
-  }
-
-  const sampleCount = samples.length;
-  if (!sampleCount) {
-    return {
-      sampleCount: 0,
-      mean: 0,
-      standardDeviation: 0,
-      samples,
-    };
-  }
-
-  const mean = samples.reduce((total, sample) => total + sample.rolling24hCount, 0) / sampleCount;
-  const meanSquare =
-    samples.reduce((total, sample) => total + sample.rolling24hCount * sample.rolling24hCount, 0) / sampleCount;
-  const variance = Math.max(0, meanSquare - mean * mean);
-
-  return {
-    sampleCount,
-    mean,
-    standardDeviation: Math.sqrt(variance),
-    samples,
-  };
-}
-
-function getRecentTimeOfDayBaseline(referenceIso, days = 7, maxDifferenceHours = 1) {
-  const referenceDate = new Date(referenceIso);
-  const samples = [];
-
-  for (let dayOffset = 1; dayOffset <= days; dayOffset += 1) {
-    const targetIso = new Date(referenceDate.getTime() - dayOffset * DAY_MS).toISOString();
-    const match = getRollingMetricNear(targetIso, maxDifferenceHours);
-    if (!match) {
-      continue;
-    }
-
-    const rolling24hCount = Number(match.rolling24hCount ?? 0);
-    const concurrentCount = Number(match.concurrentCount ?? 0);
-    const ratio = rolling24hCount > 0 ? concurrentCount / rolling24hCount : 0;
-
-    samples.push({
-      targetAt: targetIso,
-      sampledAt: match.sampledAt,
-      rolling24hCount,
-      concurrentCount,
-      ratio,
-      differenceSeconds: match.differenceSeconds,
-    });
-  }
-
-  const concurrentStats = buildStatsFromValues(samples.map((sample) => sample.concurrentCount));
-  const rollingStats = buildStatsFromValues(samples.map((sample) => sample.rolling24hCount));
-  const ratioStats = buildStatsFromValues(samples.map((sample) => sample.ratio));
-
-  return {
-    sampleCount: samples.length,
-    concurrentMean: concurrentStats.mean,
-    concurrentStandardDeviation: concurrentStats.standardDeviation,
-    rollingMean: rollingStats.mean,
-    rollingStandardDeviation: rollingStats.standardDeviation,
-    ratioMean: ratioStats.mean,
-    ratioStandardDeviation: ratioStats.standardDeviation,
-    samples,
-  };
-}
-
-function getRollingMetricNear(referenceIso, maxDifferenceHours = 12) {
-  const db = getDb();
-  const referenceTimeMs = Date.parse(referenceIso);
-  if (!Number.isFinite(referenceTimeMs)) {
-    return null;
-  }
-
-  const beforeRow = db
-    .prepare(`
-      SELECT
-        sampled_at AS sampledAt,
-        rolling_24h_count AS rolling24hCount,
-        concurrent_count AS concurrentCount
-      FROM rolling_metrics
-      WHERE sampled_at <= ?
-      ORDER BY sampled_at DESC
-      LIMIT 1
-    `)
-    .get(referenceIso);
-  const afterRow = db
-    .prepare(`
-      SELECT
-        sampled_at AS sampledAt,
-        rolling_24h_count AS rolling24hCount,
-        concurrent_count AS concurrentCount
-      FROM rolling_metrics
-      WHERE sampled_at >= ?
-      ORDER BY sampled_at ASC
-      LIMIT 1
-    `)
-    .get(referenceIso);
-
-  const candidates = [beforeRow, afterRow]
-    .filter(Boolean)
-    .map((row) => ({
-      sampledAt: row.sampledAt,
-      rolling24hCount: Number(row.rolling24hCount ?? 0),
-      concurrentCount: Number(row.concurrentCount ?? 0),
-      differenceSeconds: Math.abs(Date.parse(row.sampledAt) - referenceTimeMs) / 1000,
-    }))
-    .sort((left, right) => left.differenceSeconds - right.differenceSeconds);
-  const match = candidates[0];
-
-  if (!match || match.differenceSeconds > maxDifferenceHours * 60 * 60) {
-    return null;
-  }
-
-  return match;
-}
-
-function getCurrentRollingCount(nowIso, { liveSource = null } = {}) {
-  const db = getDb();
-  const lowerBound = new Date(new Date(nowIso).getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const row = db
-    .prepare(`
-      SELECT COUNT(DISTINCT hex) AS rolling_count
-      FROM (
-        SELECT hex
-        FROM observations
-        WHERE observed_at >= ?
-          AND observed_at <= ?
-          AND is_airborne = 1
-          AND (? IS NULL OR source = ?)
-        UNION
-        SELECT hex
-        FROM recent_history_activity
-        WHERE last_observed_at >= ?
-      )
-    `)
-    .get(lowerBound, nowIso, liveSource, liveSource, lowerBound);
-
-  return Number(row?.rolling_count ?? 0);
 }
 
 function getConcurrentCount(liveSource = null) {
@@ -414,7 +251,6 @@ function getRecentDailyMetrics(limit = 365) {
         day,
         unique_airborne_count AS uniqueAirborneCount,
         peak_concurrent_count AS peakConcurrentCount,
-        peak_rolling_24h_count AS peakRolling24hCount,
         sample_count AS sampleCount
       FROM daily_metrics
       ORDER BY day DESC
@@ -432,7 +268,6 @@ function getAllDailyMetrics() {
         day,
         unique_airborne_count AS uniqueAirborneCount,
         peak_concurrent_count AS peakConcurrentCount,
-        peak_rolling_24h_count AS peakRolling24hCount,
         sample_count AS sampleCount
       FROM daily_metrics
       ORDER BY day ASC
@@ -440,15 +275,14 @@ function getAllDailyMetrics() {
     .all();
 }
 
-function getRecentRollingMetrics(limit = 120) {
+function getRecentConcurrentMetrics(limit = 120) {
   const db = getDb();
   return db
     .prepare(`
       SELECT
         sampled_at AS sampledAt,
-        rolling_24h_count AS rolling24hCount,
         concurrent_count AS concurrentCount
-      FROM rolling_metrics
+      FROM concurrent_metrics
       ORDER BY sampled_at DESC
       LIMIT ?
     `)
@@ -456,15 +290,14 @@ function getRecentRollingMetrics(limit = 120) {
     .reverse();
 }
 
-function getAllRollingMetrics() {
+function getAllConcurrentMetrics() {
   const db = getDb();
   return db
     .prepare(`
       SELECT
         sampled_at AS sampledAt,
-        rolling_24h_count AS rolling24hCount,
         concurrent_count AS concurrentCount
-      FROM rolling_metrics
+      FROM concurrent_metrics
       ORDER BY sampled_at ASC
     `)
     .all();
@@ -545,18 +378,12 @@ module.exports = {
   setMetaValue,
   upsertTrackedAircraft,
   getTrackedAircraftEntries,
-  getBaselineStats,
-  getWeekdayBaselineStats,
-  getRecentWeekdayBaselineStats,
-  getRecentTimeOfDayBaseline,
-  getRollingMetricNear,
-  getCurrentRollingCount,
   getConcurrentCount,
   getLiveAircraft,
   getAllDailyMetrics,
   getRecentDailyMetrics,
-  getAllRollingMetrics,
-  getRecentRollingMetrics,
+  getAllConcurrentMetrics,
+  getRecentConcurrentMetrics,
   getTrackedAircraftCount,
   getTrackingSummary,
   areAllTrackedAircraftDemo,

@@ -11,6 +11,8 @@ import sqlite3
 import urllib.request
 from collections import Counter
 
+from db_migrations import migrate_schema
+
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
@@ -175,6 +177,7 @@ def open_db(path):
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.executescript(SCHEMA_PATH.read_text("utf8"))
+    migrate_schema(connection)
     return connection
 
 

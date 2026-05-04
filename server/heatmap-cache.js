@@ -29,7 +29,6 @@ function createDefaultStatus() {
     usedCache: null,
     matchedCount: null,
     airborneCount: null,
-    rolling24hCount: null,
     concurrentCount: null,
   };
 }
@@ -41,10 +40,12 @@ function loadSavedStatus() {
   }
 
   try {
-    return {
+    const parsedStatus = {
       ...createDefaultStatus(),
       ...JSON.parse(savedValue),
     };
+    delete parsedStatus.rolling24hCount;
+    return parsedStatus;
   } catch {
     return createDefaultStatus();
   }
@@ -165,7 +166,6 @@ function createHeatmapCacheRefresher({ onRefreshComplete = null } = {}) {
           usedCache: payload.usedCache ?? status.usedCache,
           matchedCount: payload.matchedCount ?? status.matchedCount,
           airborneCount: payload.airborneCount ?? status.airborneCount,
-          rolling24hCount: payload.rolling24hCount ?? status.rolling24hCount,
           concurrentCount: payload.concurrentCount ?? status.concurrentCount,
         });
         notifyRefreshComplete(true);
