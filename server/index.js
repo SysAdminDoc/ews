@@ -31,13 +31,13 @@ app.use(cors());
 app.use(express.json());
 
 app.use((request, response, next) => {
-  const legacyDashboardRoutes = ["/military", "/untracked"];
+  const removedDashboardRoutes = ["/military", "/untracked"];
   if (
-    legacyDashboardRoutes.some(
+    removedDashboardRoutes.some(
       (routePath) => request.path === routePath || request.path.startsWith(`${routePath}/`),
     )
   ) {
-    response.redirect(301, "/");
+    response.status(404).type("text/plain").send("Not found");
     return;
   }
 

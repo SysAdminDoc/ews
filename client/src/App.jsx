@@ -50,9 +50,11 @@ const ARCHIVE_CHART_HEIGHT = 320
 const ARCHIVE_DIVERGENCE_HEIGHT = 180
 const ARCHIVE_CHART_MARGIN = { top: 16, right: 18, bottom: 28, left: 44 }
 const ARCHIVE_CHART_MOBILE_MARGIN = { top: 18, right: 16, bottom: 42, left: 54 }
-const MAP_MIN_ZOOM = 1
 const MAP_ZOOM_STEP = 1.45
-const MAP_MAX_ZOOM = MAP_ZOOM_STEP ** 5
+const MAP_ZOOM_LEVEL_COUNT = 5
+const MAP_MIN_ZOOM = 1
+const MAP_MAX_ZOOM = MAP_ZOOM_STEP ** (MAP_ZOOM_LEVEL_COUNT - 1)
+const MAP_ZOOM_EPSILON = 0.000001
 const EMERGENCY_LEVEL_COUNT = 5
 const EMERGENCY_SCHEME_TAP_WINDOW_MS = 700
 const MIN_ALARM_SIGMA_THRESHOLD = 4
@@ -2302,6 +2304,8 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   const markerIconScale = isNarrowLayout ? 1.65 : 1
   const mapTransformValue = `matrix(${mapTransform.scale} 0 0 ${mapTransform.scale} ${mapTransform.translateX} ${mapTransform.translateY})`
   const markerCounterScale = 1 / mapTransform.scale
+  const canZoomIn = mapTransform.scale < MAP_MAX_ZOOM - MAP_ZOOM_EPSILON
+  const canZoomOut = mapTransform.scale > MAP_MIN_ZOOM + MAP_ZOOM_EPSILON
 
   const selectPlane = useCallback((markerId) => {
     setSelectedMarkerId(markerId)
@@ -2534,10 +2538,10 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
         ) : (
           <>
         <div className="map-controls" aria-label="Map controls">
-          <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomToVisibleAircraftCentroid(MAP_ZOOM_STEP)} aria-label="Zoom in">
+          <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomToVisibleAircraftCentroid(MAP_ZOOM_STEP)} aria-label="Zoom in" disabled={!canZoomIn}>
             <span className="map-zoom-icon map-zoom-plus" aria-hidden="true" />
           </button>
-          <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomMap(1 / MAP_ZOOM_STEP)} aria-label="Zoom out">
+          <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomMap(1 / MAP_ZOOM_STEP)} aria-label="Zoom out" disabled={!canZoomOut}>
             <span className="map-zoom-icon map-zoom-minus" aria-hidden="true" />
           </button>
         </div>
@@ -2921,16 +2925,7 @@ function UpdatesCard({ copy }) {
             The prediction band also includes historical holiday-profile uncertainty, so holiday
             periods that vary a lot from year to year are treated as less surprising.
           </p>
-          <p>
-            Emergency level is now based on a calibrated excess score instead of raw time-slot surprise alone. Let{' '}
-            <code>O</code> be observed planes, <code>P</code> predicted planes, <code>S</code> model standard deviation,
-            <code>F = median(|O - P|)</code> over historical residuals, and{' '}
-            <code>A = median(O - P | O &gt; P)</code>. Then{' '}
-            <code>D = O - P</code>, <code>S_eff = max(S, F)</code>,{' '}
-            <code>W = D &gt; 0 ? D / (D + A) : 1</code>, and{' '}
-            <code>Z = D &gt; 0 ? (D / S_eff) * W : D / S_eff</code>. The 1-5 emergency level maps positive{' '}
-            <code>Z</code> against the alarm threshold calibrated from trailing-year daily peaks.
-          </p>
+          <p>Emergency level is now based on a calibrated excess score instead of raw time-slot surprise alone.</p>
         </article>
       </div>
     </section>
@@ -3547,16 +3542,6 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
 function App() {
   if (window.location.pathname === '/signup' || window.location.pathname.startsWith('/signup/')) {
     return <SignupPage />
-  }
-
-  if (
-    window.location.pathname === '/military' ||
-    window.location.pathname.startsWith('/military/') ||
-    window.location.pathname === '/untracked' ||
-    window.location.pathname.startsWith('/untracked/')
-  ) {
-    window.location.replace('/')
-    return null
   }
 
   return <DashboardApp dashboardUrl={DASHBOARD_URL} enableCohortControls primaryCohortKind="business" />

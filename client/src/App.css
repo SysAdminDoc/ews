@@ -565,8 +565,13 @@ html.emergency-color-scheme .archive-chart-svg [stroke="#ffffff"] {
   transform: translate(-50%, -50%) rotate(90deg);
 }
 
-.map-control-button:hover {
+.map-control-button:hover:not(:disabled) {
   background: #efefef;
+}
+
+.map-control-button:disabled {
+  cursor: default;
+  opacity: 0.38;
 }
 
 .map-control-button:focus-visible {
@@ -580,7 +585,7 @@ html.emergency-color-scheme .map-control-button {
   color: #ffffff;
 }
 
-html.emergency-color-scheme .map-control-button:hover {
+html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   background: #171717;
 }
 
@@ -1102,7 +1107,7 @@ html.emergency-color-scheme .map-control-button:hover {
   display: grid;
   gap: 14px;
   margin-top: 12px;
-  max-width: 82ch;
+  max-width: 78ch;
 }
 
 .faq-list article {
@@ -1331,6 +1336,8 @@ html.emergency-color-scheme .map-control-button:hover {
 .updates-copy {
   display: grid;
   gap: 12px;
+  max-width: 78ch;
+  margin-top: 12px;
 }
 
 .update-entry {
