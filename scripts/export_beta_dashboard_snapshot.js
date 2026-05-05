@@ -7,6 +7,8 @@ function parseArgs(argv) {
   const args = {
     output: null,
     db: process.env.EWS_BETA_DB_PATH || path.join(__dirname, "..", "data", "ews-beta.sqlite"),
+    endpoint: "beta",
+    cohort: "global_business_jet",
   };
 
   for (let index = 2; index < argv.length; index += 1) {
@@ -16,6 +18,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (value === "--db") {
       args.db = path.resolve(argv[index + 1]);
+      index += 1;
+    } else if (value === "--endpoint") {
+      args.endpoint = argv[index + 1];
+      index += 1;
+    } else if (value === "--cohort") {
+      args.cohort = argv[index + 1];
       index += 1;
     } else if (value === "--help" || value === "-h") {
       args.help = true;
@@ -28,7 +36,9 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log("Usage: node scripts/export_beta_dashboard_snapshot.js [--db path] [--output path]");
+  console.log(
+    "Usage: node scripts/export_beta_dashboard_snapshot.js [--db path] [--output path] [--endpoint name] [--cohort id]",
+  );
 }
 
 function main() {
@@ -46,13 +56,13 @@ function main() {
   const { initDb } = require("../server/db");
   const {
     buildDashboardSnapshot,
-    CONCURRENT_ANNUAL_RATIO_MODEL,
-    CONCURRENT_ANNUAL_RATIO_TIME_ZONE,
+    CONCURRENT_WEEKLY_BASELINE_TIME_ZONE,
+    CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
   } = require("../server/dashboard");
   const output = args.output || path.join(DATA_DIR, "published", "beta-dashboard.json");
   const concurrentPredictionOptions = {
-    concurrentPredictionModel: CONCURRENT_ANNUAL_RATIO_MODEL,
-    annualRatioTimeZone: process.env.EWS_BETA_MODEL_TIME_ZONE || CONCURRENT_ANNUAL_RATIO_TIME_ZONE,
+    concurrentPredictionModel: CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
+    weeklyBaselineTimeZone: process.env.EWS_BETA_MODEL_TIME_ZONE || CONCURRENT_WEEKLY_BASELINE_TIME_ZONE,
   };
 
   ensureDirectories();
@@ -60,14 +70,18 @@ function main() {
 
   const snapshot = {
     ...buildDashboardSnapshot({ concurrentPredictionOptions }),
-    beta: {
+    page: {
       enabled: true,
+      endpoint: args.endpoint,
       dbPath: DB_PATH,
-      cohort: "global_business_jet",
+      cohort: args.cohort,
       predictionModel: concurrentPredictionOptions.concurrentPredictionModel,
-      predictionTimeZone: concurrentPredictionOptions.annualRatioTimeZone,
+      predictionTimeZone: concurrentPredictionOptions.weeklyBaselineTimeZone,
     },
   };
+  if (args.endpoint === "beta") {
+    snapshot.beta = snapshot.page;
+  }
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, `${JSON.stringify(snapshot, null, 2)}\n`);
   console.log(

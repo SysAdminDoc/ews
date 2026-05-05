@@ -18,10 +18,14 @@ env:
   PUBLIC_BUCKET: ews-public
   STATE_BUCKET: ews-state
   BETA_DB_PATH: data/ews-beta.sqlite
+  MILITARY_DB_PATH: data/ews-military.sqlite
+  UNTRACKED_DB_PATH: data/ews-untracked.sqlite
   EWS_PUBLIC_URL: https://ews.kylemcdonald.net/
   EWS_RSS_URL: https://ews.kylemcdonald.net/rss.xml
   VITE_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/dashboard.json
   VITE_BETA_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/beta-dashboard.json
+  VITE_MILITARY_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/military-dashboard.json
+  VITE_UNTRACKED_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/untracked-dashboard.json
 
 concurrency:
   group: refresh-live-data
@@ -83,17 +87,59 @@ jobs:
             sleep $((attempt * 15))
           done
 
+      - name: Restore military deployment state
+        run: |
+          mkdir -p data
+          for attempt in 1 2 3 4 5; do
+            if npx wrangler r2 object get "${STATE_BUCKET}/ews-military.sqlite" --file "${MILITARY_DB_PATH}" --remote; then
+              exit 0
+            fi
+            echo "R2 military restore attempt ${attempt} failed."
+            if [ "$attempt" -eq 5 ]; then
+              python3 scripts/import_global_cohort.py --db "${MILITARY_DB_PATH}" --tracked-category military --tracked-source global_military_aircraft
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Restore untracked deployment state
+        run: |
+          mkdir -p data
+          for attempt in 1 2 3 4 5; do
+            if npx wrangler r2 object get "${STATE_BUCKET}/ews-untracked.sqlite" --file "${UNTRACKED_DB_PATH}" --remote; then
+              exit 0
+            fi
+            echo "R2 untracked restore attempt ${attempt} failed."
+            if [ "$attempt" -eq 5 ]; then
+              python3 scripts/track_non_icao_hex.py --db "${UNTRACKED_DB_PATH}" --latest-live --cache-dir data/cache/adsbx_live --replace-live-snapshot
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+
       - name: Refresh latest heatmap
         run: python3 scripts/update_latest_heatmap.py
 
       - name: Refresh latest beta heatmap
         run: python3 scripts/update_latest_heatmap.py --db "${BETA_DB_PATH}"
 
+      - name: Refresh latest military heatmap
+        run: python3 scripts/update_latest_heatmap.py --db "${MILITARY_DB_PATH}"
+
+      - name: Refresh latest untracked heatmap
+        run: python3 scripts/track_non_icao_hex.py --db "${UNTRACKED_DB_PATH}" --latest-live --cache-dir data/cache/adsbx_live --replace-live-snapshot
+
       - name: Export published dashboard snapshot
         run: node scripts/export_dashboard_snapshot.js --output tmp/dashboard.json
 
       - name: Export published beta dashboard snapshot
         run: node scripts/export_beta_dashboard_snapshot.js --db "${BETA_DB_PATH}" --output tmp/beta-dashboard.json
+
+      - name: Export published military dashboard snapshot
+        run: node scripts/export_beta_dashboard_snapshot.js --db "${MILITARY_DB_PATH}" --output tmp/military-dashboard.json --endpoint military --cohort global_military_aircraft
+
+      - name: Export published untracked dashboard snapshot
+        run: node scripts/export_beta_dashboard_snapshot.js --db "${UNTRACKED_DB_PATH}" --output tmp/untracked-dashboard.json --endpoint untracked --cohort non_icao_untracked
 
       - name: Send Telegram emergency alert
         run: node scripts/send_telegram_alert.js
@@ -126,6 +172,32 @@ jobs:
               exit 0
             fi
             echo "R2 beta state upload attempt ${attempt} failed."
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Upload military deployment state
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if npx wrangler r2 object put "${STATE_BUCKET}/ews-military.sqlite" --file "${MILITARY_DB_PATH}" --remote; then
+              exit 0
+            fi
+            echo "R2 military state upload attempt ${attempt} failed."
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Upload untracked deployment state
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if npx wrangler r2 object put "${STATE_BUCKET}/ews-untracked.sqlite" --file "${UNTRACKED_DB_PATH}" --remote; then
+              exit 0
+            fi
+            echo "R2 untracked state upload attempt ${attempt} failed."
             if [ "$attempt" -eq 5 ]; then
               exit 1
             fi
@@ -185,6 +257,40 @@ jobs:
               exit 0
             fi
             echo "R2 beta snapshot publish attempt ${attempt} failed."
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Publish military live snapshot
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if npx wrangler r2 object put "${PUBLIC_BUCKET}/military-dashboard.json" \
+              --file tmp/military-dashboard.json \
+              --remote \
+              --content-type application/json \
+              --cache-control "public, max-age=300"; then
+              exit 0
+            fi
+            echo "R2 military snapshot publish attempt ${attempt} failed."
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Publish untracked live snapshot
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if npx wrangler r2 object put "${PUBLIC_BUCKET}/untracked-dashboard.json" \
+              --file tmp/untracked-dashboard.json \
+              --remote \
+              --content-type application/json \
+              --cache-control "public, max-age=300"; then
+              exit 0
+            fi
+            echo "R2 untracked snapshot publish attempt ${attempt} failed."
             if [ "$attempt" -eq 5 ]; then
               exit 1
             fi

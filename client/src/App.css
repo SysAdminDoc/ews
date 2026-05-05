@@ -85,6 +85,8 @@
 .list-panel,
 .summary-panel,
 .about-panel,
+.faq-panel,
+.updates-panel,
 .loading-panel,
 .error-panel,
 .provider-panel,
@@ -590,6 +592,24 @@ html.emergency-color-scheme .map-control-button:hover {
   color: inherit;
 }
 
+.map-unavailable-state {
+  display: grid;
+  min-height: 340px;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.map-unavailable-state strong {
+  font-size: clamp(1.6rem, 4vw, 3rem);
+  line-height: 1;
+}
+
+.map-unavailable-state span {
+  max-width: 48ch;
+}
+
 .map-hover-card {
   position: absolute;
   top: 12px;
@@ -968,12 +988,24 @@ html.emergency-color-scheme .map-control-button:hover {
 
 .archive-chart-shell {
   position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .archive-chart-svg {
   display: block;
   width: 100%;
   height: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+.archive-chart-shell ::selection {
+  background: transparent;
+  color: inherit;
 }
 
 .about-copy {
@@ -993,6 +1025,32 @@ html.emergency-color-scheme .map-control-button:hover {
 }
 
 .about-credit {
+  padding-top: 2px;
+  font-weight: 700;
+}
+
+.faq-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+  max-width: 82ch;
+}
+
+.faq-list article {
+  display: grid;
+  gap: 4px;
+}
+
+.faq-list h3,
+.faq-list p {
+  margin: 0;
+}
+
+.faq-list h3 {
+  font-size: 1rem;
+}
+
+.faq-source-note {
   padding-top: 2px;
   font-weight: 700;
 }
@@ -1178,6 +1236,29 @@ html.emergency-color-scheme .map-control-button:hover {
   background: #f8f8f8;
 }
 
+.updates-copy {
+  display: grid;
+  gap: 12px;
+}
+
+.update-entry {
+  display: grid;
+  gap: 8px;
+}
+
+.update-entry h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.update-entry p {
+  margin: 0;
+}
+
+.update-entry code {
+  font-size: 0.95em;
+}
+
 .history-panel {
   overflow: hidden;
 }
@@ -1233,6 +1314,8 @@ html.emergency-color-scheme .map-control-button:hover {
   .list-panel,
   .summary-panel,
   .about-panel,
+  .faq-panel,
+  .updates-panel,
   .loading-panel,
   .error-panel,
   .provider-panel,

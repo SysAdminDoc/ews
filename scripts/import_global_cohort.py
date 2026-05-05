@@ -24,7 +24,8 @@ TAR1090_DB_URL = "https://github.com/wiedehopf/tar1090-db/raw/refs/heads/csv/air
 ADSBX_BASIC_DB_PATH = AIRCRAFT_DB_DIR / "basic-ac-db.json.gz"
 TAR1090_DB_PATH = AIRCRAFT_DB_DIR / "tar1090-aircraft.csv.gz"
 
-SOURCE = "global_business_jet"
+DEFAULT_TRACKED_CATEGORY = "business_jet"
+DEFAULT_TRACKED_SOURCE = "global_business_jet"
 METADATA_SOURCE = "public_aircraft_metadata"
 
 INCLUDE_MANUFACTURER_PATTERNS = [
@@ -152,6 +153,16 @@ def parse_args():
         "--replace-existing",
         action="store_true",
         help="Allow global records to update existing tracked_aircraft rows. By default existing rows are preserved.",
+    )
+    parser.add_argument(
+        "--tracked-category",
+        default=DEFAULT_TRACKED_CATEGORY,
+        help="aircraft_metadata category to copy into tracked_aircraft.",
+    )
+    parser.add_argument(
+        "--tracked-source",
+        default=DEFAULT_TRACKED_SOURCE,
+        help="tracked_aircraft source label for selected records.",
     )
     return parser.parse_args()
 
@@ -389,13 +400,16 @@ def build_label(record):
     return model or manufacturer or record.get("icao_type") or record["hex"].upper()
 
 
-def build_entries(records, include_pia=False):
+def build_entries(records, include_pia=False, tracked_category=DEFAULT_TRACKED_CATEGORY, tracked_source=DEFAULT_TRACKED_SOURCE):
     entries = []
     for record in records.values():
-        if not is_business_jet(record, include_pia=include_pia):
+        category, category_reason = classify_record(record, include_pia=include_pia)
+        if category != tracked_category:
             continue
 
         notes = {
+            "category": category,
+            "category_reason": category_reason,
             "icao_type": record.get("icao_type"),
             "manufacturer": record.get("manufacturer"),
             "model": record.get("model"),
@@ -413,7 +427,7 @@ def build_entries(records, include_pia=False):
                 "hex": record["hex"],
                 "registration": record.get("registration"),
                 "label": build_label(record),
-                "source": SOURCE,
+                "source": tracked_source,
                 "notes": json.dumps(notes, separators=(",", ":"), sort_keys=True),
             }
         )
@@ -508,8 +522,8 @@ def import_metadata(connection, rows):
     return connection.execute("SELECT COUNT(*) FROM aircraft_metadata").fetchone()[0]
 
 
-def import_entries(connection, entries, replace_existing=False):
-    connection.execute("DELETE FROM tracked_aircraft WHERE source = ?", (SOURCE,))
+def import_entries(connection, entries, tracked_source=DEFAULT_TRACKED_SOURCE, replace_existing=False):
+    connection.execute("DELETE FROM tracked_aircraft WHERE source = ?", (tracked_source,))
 
     if replace_existing:
         statement = """
@@ -531,15 +545,16 @@ def import_entries(connection, entries, replace_existing=False):
     connection.executemany(statement, entries)
     inserted = connection.execute(
         "SELECT COUNT(*) FROM tracked_aircraft WHERE source = ?",
-        (SOURCE,),
+        (tracked_source,),
     ).fetchone()[0]
+    meta_prefix = tracked_source
     connection.execute(
         """
         INSERT INTO meta (key, value)
         VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
-        ("global_business_jet_imported_at", dt.datetime.now(dt.timezone.utc).isoformat()),
+        (f"{meta_prefix}_imported_at", dt.datetime.now(dt.timezone.utc).isoformat()),
     )
     connection.execute(
         """
@@ -547,7 +562,15 @@ def import_entries(connection, entries, replace_existing=False):
         VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
-        ("global_business_jet_count", str(inserted)),
+        (f"{meta_prefix}_count", str(inserted)),
+    )
+    connection.execute(
+        """
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        ("cohort_source", tracked_source),
     )
     return inserted
 
@@ -561,11 +584,16 @@ def main():
     records = load_adsbx_records(adsbx_path)
     merge_tar1090_records(records, tar1090_path)
     metadata_rows = build_metadata_rows(records, include_pia=args.include_pia)
-    entries = build_entries(records, include_pia=args.include_pia)
+    entries = build_entries(
+        records,
+        include_pia=args.include_pia,
+        tracked_category=args.tracked_category,
+        tracked_source=args.tracked_source,
+    )
     category_counts = Counter(row["category"] for row in metadata_rows)
 
     print(f"Loaded {len(records):,} unique aircraft metadata rows")
-    print(f"Selected {len(entries):,} global business-jet candidates")
+    print(f"Selected {len(entries):,} {args.tracked_category} candidates with source={args.tracked_source!r}")
     print("Top metadata categories:")
     for category, count in category_counts.most_common(10):
         print(f"  {count:7d}  {category}")
@@ -579,11 +607,16 @@ def main():
 
     connection = open_db(args.db)
     metadata_count = import_metadata(connection, metadata_rows)
-    inserted = import_entries(connection, entries, replace_existing=args.replace_existing)
+    inserted = import_entries(
+        connection,
+        entries,
+        tracked_source=args.tracked_source,
+        replace_existing=args.replace_existing,
+    )
     connection.commit()
     connection.close()
     print(f"Imported {metadata_count:,} aircraft metadata rows into {args.db}")
-    print(f"Imported {inserted:,} global aircraft into {args.db} with source={SOURCE!r}")
+    print(f"Imported {inserted:,} aircraft into {args.db} with source={args.tracked_source!r}")
 
 
 if __name__ == "__main__":

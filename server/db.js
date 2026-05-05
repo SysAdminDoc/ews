@@ -324,18 +324,39 @@ function getTrackingSummary() {
         COUNT(*) AS tracked_count,
         SUM(CASE WHEN source = 'faa_business_jet' THEN 1 ELSE 0 END) AS faa_count,
         SUM(CASE WHEN source = 'global_business_jet' THEN 1 ELSE 0 END) AS global_count,
+        SUM(CASE WHEN source = 'global_military_aircraft' THEN 1 ELSE 0 END) AS global_military_count,
         SUM(CASE WHEN source = 'local_watchlist' THEN 1 ELSE 0 END) AS watchlist_count
       FROM tracked_aircraft
       WHERE source != 'demo'
     `)
     .get();
+  const cohortSource = db.prepare("SELECT value FROM meta WHERE key = 'cohort_source'").get()?.value ?? null;
+  const untrackedCount = Number(
+    db.prepare("SELECT COUNT(*) AS sample_count FROM concurrent_metrics").get()?.sample_count ?? 0,
+  );
 
   const trackedCount = Number(row?.tracked_count ?? 0);
   const faaCount = Number(row?.faa_count ?? 0);
   const globalCount = Number(row?.global_count ?? 0);
+  const globalMilitaryCount = Number(row?.global_military_count ?? 0);
   const watchlistCount = Number(row?.watchlist_count ?? 0);
 
   if (!trackedCount) {
+    if (cohortSource === "non_icao_untracked" && untrackedCount) {
+      return {
+        configured: true,
+        trackedCount: null,
+        faaCount: 0,
+        globalCount: 0,
+        globalMilitaryCount: 0,
+        watchlistCount: 0,
+        reason: null,
+        source: "non_icao_untracked",
+        sourceLabel: "ADS-B Exchange non-ICAO addresses",
+        cohortType: "non_icao",
+      };
+    }
+
     return {
       configured: false,
       trackedCount: 0,
@@ -348,10 +369,28 @@ function getTrackingSummary() {
     trackedCount,
     faaCount,
     globalCount,
+    globalMilitaryCount,
     watchlistCount,
     reason: null,
-    source: globalCount ? "global_business_jet" : faaCount ? "faa_business_jet" : watchlistCount ? "local_watchlist" : "custom",
-    sourceLabel: globalCount ? "Global public metadata + FAA" : faaCount ? "FAA registry" : watchlistCount ? "Local watchlist" : "Custom",
+    source: globalMilitaryCount
+      ? "global_military_aircraft"
+      : globalCount
+        ? "global_business_jet"
+        : faaCount
+          ? "faa_business_jet"
+          : watchlistCount
+            ? "local_watchlist"
+            : cohortSource || "custom",
+    sourceLabel: globalMilitaryCount
+      ? "Global public metadata military flag"
+      : globalCount
+        ? "Global public metadata + FAA"
+        : faaCount
+          ? "FAA registry"
+          : watchlistCount
+            ? "Local watchlist"
+            : "Custom",
+    cohortType: globalMilitaryCount ? "military" : "business_jet",
   };
 }
 

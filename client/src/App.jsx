@@ -6,6 +6,9 @@ import './App.css'
 
 const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || '/api/dashboard'
 const BETA_DASHBOARD_URL = import.meta.env.VITE_BETA_DASHBOARD_URL || '/beta-dashboard.json'
+const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || '/military-dashboard.json'
+const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || '/untracked-dashboard.json'
+const DISCORD_BOT_URL = 'https://jamiew.github.io/apocalypse-ews-discord/'
 const DASHBOARD_CACHE_BUSTER_MINUTES = 5
 const DASHBOARD_POLL_INTERVAL_MS = 5 * 60_000
 const MAP_WIDTH = 800
@@ -20,6 +23,17 @@ const CHART_GRID_COLOR = '#d4d4d4'
 const CHART_PRIMARY_COLOR = '#0000ee'
 const CHART_SECONDARY_COLOR = '#808080'
 const CHART_LONG_WINDOW_SECONDARY_COLOR = 'rgba(128, 128, 128, 0.48)'
+const CHART_PREDICTION_BAND_FILL = 'rgba(128, 128, 128, 0.18)'
+const CHART_HOLIDAY_REGION_FILL = 'rgba(255, 196, 0, 0.16)'
+const CHART_HOLIDAY_REGION_STROKE = 'rgba(160, 112, 0, 0.34)'
+const CONCURRENT_WEEKLY_BASELINE_MODEL = 'all-history-weekly-baseline'
+const CONCURRENT_WEEKLY_DAY_RATIO_MODEL = 'weekly-baseline-prior-year-day-ratio'
+const CONCURRENT_WEEKLY_US_HOLIDAY_MODEL = 'weekly-baseline-us-holiday-adjusted'
+const PREDICTION_BAND_MODELS = new Set([
+  CONCURRENT_WEEKLY_BASELINE_MODEL,
+  CONCURRENT_WEEKLY_DAY_RATIO_MODEL,
+  CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
+])
 const WORLD_FEATURE_COLLECTION = { type: 'FeatureCollection', features: worldGeographies }
 const LOADING_ANIMATION_URL = '/animation.mp4'
 const BACKGROUND_URL = '/backgrounds/soft-cartoon-tile-15.webp'
@@ -227,7 +241,7 @@ function roundDateToNearestHalfHour(value) {
   return new Date(Math.round(timestamp / (30 * 60 * 1000)) * 30 * 60 * 1000)
 }
 
-function formatTimestamp(value) {
+function formatTimestamp(value, options = {}) {
   if (!value) {
     return 'No timestamp'
   }
@@ -238,6 +252,7 @@ function formatTimestamp(value) {
   }
 
   return new Intl.DateTimeFormat('en-US', {
+    ...(options.weekday ? { weekday: 'short' } : {}),
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -325,6 +340,100 @@ function getAircraftModelWikipediaUrl(modelLabel) {
 
 function getAircraftModelMaxPassengers(modelLabel) {
   return AIRCRAFT_MODEL_MAX_PASSENGERS.get(normalizeModelLabel(modelLabel).toUpperCase()) || null
+}
+
+function getCohortKind(cohort) {
+  if (cohort?.cohortType === 'military' || cohort?.source === 'global_military_aircraft') {
+    return 'military'
+  }
+
+  if (cohort?.cohortType === 'non_icao' || cohort?.source === 'non_icao_untracked') {
+    return 'untracked'
+  }
+
+  return 'business'
+}
+
+function getCohortCopy(cohort) {
+  const kind = getCohortKind(cohort)
+  if (kind === 'military') {
+    return {
+      kind,
+      trackedNoun: 'military aircraft',
+      trackedSingular: 'military aircraft',
+      trackedDescription: 'a fixed global cohort of military aircraft visible in public aircraft metadata',
+      filterDescription: 'a public metadata military flag',
+      sourceDescription: 'global public aircraft metadata, ADS-B Exchange lookups, and Mictronics/tar1090 records',
+      sourceShort: 'global military',
+      modelSummaryTitle: 'Aircraft By Model',
+      emptyLiveText: 'No tracked military aircraft are currently airborne in the latest cached heatmap.',
+      showSeatEstimate: false,
+      heroCaption: (
+        <>
+          This view tracks military aircraft visible in public ADS-B Exchange data and asks whether the number currently
+          airborne is unusual for the time of week and the U.S. holiday calendar. It uses the same anomaly model as the
+          main dashboard, but with a military-aircraft cohort instead of business jets.
+        </>
+      ),
+    }
+  }
+
+  if (kind === 'untracked') {
+    return {
+      kind,
+      trackedNoun: 'non-ICAO aircraft',
+      trackedSingular: 'non-ICAO aircraft',
+      trackedDescription: 'all aircraft using readsb non-ICAO ~hex addresses in ADS-B Exchange heatmaps',
+      filterDescription: 'the readsb non-ICAO address marker',
+      sourceDescription: 'ADS-B Exchange heatmaps',
+      sourceShort: 'non-ICAO',
+      modelSummaryTitle: 'Aircraft By Identifier',
+      emptyLiveText: 'No non-ICAO aircraft are currently airborne in the latest cached heatmap.',
+      showSeatEstimate: false,
+      heroCaption: (
+        <>
+          This view tracks aircraft using non-ICAO <code>~hex</code> addresses in public ADS-B Exchange heatmaps and asks
+          whether that activity is unusual for the time of week and the U.S. holiday calendar. It is intended to surface
+          address-use anomalies separately from the business-jet cohort.
+        </>
+      ),
+    }
+  }
+
+  return {
+    kind,
+    trackedNoun: 'business jets',
+    trackedSingular: 'business jet',
+    trackedDescription: 'a fixed cohort of business jets',
+    filterDescription: 'a practical business-jet filter',
+    sourceDescription: 'public global aircraft metadata, ADS-B Exchange lookups, Mictronics/tar1090 records, and FAA registry data',
+    sourceShort: Number(cohort?.globalCount || 0) > 0 ? 'global' : 'FAA-derived',
+    modelSummaryTitle: 'Aircraft By Model',
+    emptyLiveText: 'No tracked aircraft are currently airborne in the latest cached heatmap.',
+    showSeatEstimate: true,
+    heroCaption: (
+      <>
+        In the event of an imminent nuclear apocalypse, we suspect that many people who have access to private jets will
+        immediately take to the skies and escape city centers. This site tracks this indicator in realtime. The current
+        emergency level is reported on a scale of 1 to 5, with 5 being an indicator of a likely imminent apocalypse.
+      </>
+    ),
+  }
+}
+
+function getAdsbDataUnavailableStatus(liveStatus) {
+  const latestTimestamp = Date.parse(liveStatus?.latestSampledAt || 0)
+  const cadenceMinutes = Number(liveStatus?.cadenceMinutes || 30)
+  const maxAgeMs = Math.max(cadenceMinutes * 4 * 60 * 1000, 2 * 60 * 60 * 1000)
+  const ageMs = Date.now() - latestTimestamp
+  const isStale = !Number.isFinite(latestTimestamp) || ageMs > maxAgeMs
+  const isUnavailable = Boolean(liveStatus?.lastError) || isStale
+
+  return {
+    isUnavailable,
+    isStale,
+    ageMs: Number.isFinite(ageMs) ? ageMs : null,
+  }
 }
 
 function estimateMaxSeatsAirborne(aircraft, totalAircraftCountOverride = null) {
@@ -617,6 +726,37 @@ function buildSvgAreaPath(data, xScale, yScale, accessor, baselineValue) {
   return path
 }
 
+function buildSvgBandPath(data, xScale, yScale, lowerAccessor, upperAccessor) {
+  const upperPoints = []
+  const lowerPoints = []
+
+  for (let index = 0; index < data.length; index += 1) {
+    const lowerValue = lowerAccessor(data[index])
+    const upperValue = upperAccessor(data[index])
+    if (!Number.isFinite(lowerValue) || !Number.isFinite(upperValue)) {
+      continue
+    }
+
+    upperPoints.push([xScale(index), yScale(upperValue)])
+    lowerPoints.push([xScale(index), yScale(lowerValue)])
+  }
+
+  if (!upperPoints.length) {
+    return ''
+  }
+
+  let path = upperPoints
+    .map(([x, y], index) => `${index ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`)
+    .join('')
+
+  for (let index = lowerPoints.length - 1; index >= 0; index -= 1) {
+    const [x, y] = lowerPoints[index]
+    path += `L${x.toFixed(2)},${y.toFixed(2)}`
+  }
+
+  return `${path}Z`
+}
+
 function getContinuousEmergencyLevel(sigmaShift, alarmSigmaThreshold) {
   const alarmSigma = Number(alarmSigmaThreshold)
   if (!Number.isFinite(alarmSigma) || alarmSigma <= 0) {
@@ -655,14 +795,20 @@ function ArchiveSvgChart({
   windowDays,
   yTickFormatter = (value) => String(value),
   lines = [],
+  bands = [],
+  regions = [],
   area = null,
   showZeroLine = false,
   referenceLines = [],
   yAxisTicks = null,
+  hoverIndex: controlledHoverIndex = null,
+  onHoverIndexChange = null,
   tooltipFormatter,
 }) {
   const isNarrowLayout = useIsNarrowLayout()
-  const [hoverIndex, setHoverIndex] = useState(null)
+  const [internalHoverIndex, setInternalHoverIndex] = useState(null)
+  const hoverIndex = onHoverIndexChange ? controlledHoverIndex : internalHoverIndex
+  const setHoverIndex = onHoverIndexChange || setInternalHoverIndex
 
   const chartState = useMemo(() => {
     if (!data.length) {
@@ -697,6 +843,19 @@ function ArchiveSvgChart({
         }
       }
       allValues.push(area.baselineValue)
+    }
+
+    for (const band of bands) {
+      for (const sample of data) {
+        const lowerValue = band.lowerAccessor(sample)
+        const upperValue = band.upperAccessor(sample)
+        if (Number.isFinite(lowerValue)) {
+          allValues.push(lowerValue)
+        }
+        if (Number.isFinite(upperValue)) {
+          allValues.push(upperValue)
+        }
+      }
     }
 
     for (const referenceLine of referenceLines) {
@@ -754,14 +913,24 @@ function ArchiveSvgChart({
       yMax,
       referenceLines: referenceLines.filter((referenceLine) => Number.isFinite(referenceLine.value)),
     }
-  }, [area, data, height, isNarrowLayout, lines, referenceLines, showZeroLine, windowDays, yAxisTicks, yTickFormatter])
+  }, [area, bands, data, height, isNarrowLayout, lines, referenceLines, showZeroLine, windowDays, yAxisTicks, yTickFormatter])
 
   if (!chartState) {
     return null
   }
 
-  const hoverSample = hoverIndex != null ? data[hoverIndex] : null
-  const hoverX = hoverIndex != null ? chartState.xScale(hoverIndex) : null
+  const effectiveHoverIndex = hoverIndex != null && hoverIndex >= 0 && hoverIndex < data.length ? hoverIndex : null
+  const hoverSample = effectiveHoverIndex != null ? data[effectiveHoverIndex] : null
+  const hoverX = effectiveHoverIndex != null ? chartState.xScale(effectiveHoverIndex) : null
+
+  function setHoverIndexFromClientX(clientX, target) {
+    const bounds = target.getBoundingClientRect()
+    const relativeX = ((clientX - bounds.left) / bounds.width) * chartState.width
+    const timestamp =
+      chartState.xMin +
+      ((relativeX - chartState.margin.left) / Math.max(1, chartState.innerWidth)) * (chartState.xMax - chartState.xMin)
+    setHoverIndex(findNearestTimestampIndex(chartState.timestamps, timestamp))
+  }
 
   return (
     <div className="archive-chart-shell">
@@ -778,25 +947,31 @@ function ArchiveSvgChart({
         onMouseLeave={() => setHoverIndex(null)}
         onTouchEnd={() => setHoverIndex(null)}
         onMouseMove={(event) => {
-          const bounds = event.currentTarget.getBoundingClientRect()
-          const relativeX = ((event.clientX - bounds.left) / bounds.width) * chartState.width
-          const timestamp =
-            chartState.xMin +
-            ((relativeX - chartState.margin.left) / Math.max(1, chartState.innerWidth)) * (chartState.xMax - chartState.xMin)
-          setHoverIndex(findNearestTimestampIndex(chartState.timestamps, timestamp))
+          setHoverIndexFromClientX(event.clientX, event.currentTarget)
+        }}
+        onTouchStart={(event) => {
+          clearCurrentTextSelection()
+          if (event.cancelable) {
+            event.preventDefault()
+          }
+
+          const touch = event.touches[0]
+          if (touch) {
+            setHoverIndexFromClientX(touch.clientX, event.currentTarget)
+          }
         }}
         onTouchMove={(event) => {
+          clearCurrentTextSelection()
+          if (event.cancelable) {
+            event.preventDefault()
+          }
+
           const touch = event.touches[0]
           if (!touch) {
             return
           }
 
-          const bounds = event.currentTarget.getBoundingClientRect()
-          const relativeX = ((touch.clientX - bounds.left) / bounds.width) * chartState.width
-          const timestamp =
-            chartState.xMin +
-            ((relativeX - chartState.margin.left) / Math.max(1, chartState.innerWidth)) * (chartState.xMax - chartState.xMin)
-          setHoverIndex(findNearestTimestampIndex(chartState.timestamps, timestamp))
+          setHoverIndexFromClientX(touch.clientX, event.currentTarget)
         }}
       >
         {chartState.yTicks.map((tick) => (
@@ -856,6 +1031,41 @@ function ArchiveSvgChart({
             strokeDasharray="5 5"
           />
         ) : null}
+        {regions.map((region) => {
+          const startsAt = Date.parse(region.startsAt)
+          const endsAt = Date.parse(region.endsAt)
+          if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= chartState.xMin || startsAt >= chartState.xMax) {
+            return null
+          }
+
+          const xStart = chartState.xScaleFromTimestamp(Math.max(startsAt, chartState.xMin))
+          const xEnd = chartState.xScaleFromTimestamp(Math.min(endsAt, chartState.xMax))
+          const width = Math.max(1, xEnd - xStart)
+          return (
+            <g key={`${region.id}-${region.holidayDateKey}-${region.startsAt}`}>
+              <rect
+                x={xStart}
+                y={chartState.margin.top}
+                width={width}
+                height={chartState.height - chartState.margin.top - chartState.margin.bottom}
+                fill={region.fill || CHART_HOLIDAY_REGION_FILL}
+                stroke={region.stroke || CHART_HOLIDAY_REGION_STROKE}
+                strokeWidth="1"
+                vectorEffect="non-scaling-stroke"
+              />
+              {width >= 52 ? (
+                <text
+                  x={xStart + 5}
+                  y={chartState.margin.top + 14}
+                  fill="#6c4a00"
+                  fontSize={chartState.tickFontSize}
+                >
+                  {region.label}
+                </text>
+              ) : null}
+            </g>
+          )
+        })}
         {area ? (
           <path
             d={buildSvgAreaPath(data, chartState.xScale, chartState.yScale, area.accessor, area.baselineValue)}
@@ -863,6 +1073,14 @@ function ArchiveSvgChart({
             stroke="none"
           />
         ) : null}
+        {bands.map((band) => (
+          <path
+            key={band.name}
+            d={buildSvgBandPath(data, chartState.xScale, chartState.yScale, band.lowerAccessor, band.upperAccessor)}
+            fill={band.fill}
+            stroke="none"
+          />
+        ))}
         {chartState.referenceLines.map((referenceLine) => (
           <line
             key={`reference-${referenceLine.label}-${referenceLine.value}`}
@@ -1044,7 +1262,13 @@ function normalizeDashboardArchive(archive) {
   }
 
   const timestamps = expandTimestampRuns(archive.t0, archive.tr)
-  const rowCount = Math.max(timestamps.length, archive.c.length, archive.p?.length || 0, archive.s?.length || 0)
+  const rowCount = Math.max(
+    timestamps.length,
+    archive.c.length,
+    archive.p?.length || 0,
+    archive.s?.length || 0,
+    archive.z?.length || 0,
+  )
 
   return Array.from({ length: rowCount }, (_, index) =>
     normalizeArchiveSample({
@@ -1052,6 +1276,7 @@ function normalizeDashboardArchive(archive) {
       concurrentCount: archive.c[index],
       predictedConcurrentCount: archive.p?.[index],
       predictedConcurrentStdDev: archive.s?.[index],
+      sigmaShift: archive.z?.[index],
     }),
   )
 }
@@ -1109,7 +1334,12 @@ function EmergencySummary({
       </div>
       <div className="summary-text-block">
         <p className="summary-count-line">
-          <strong>{formatCount(actualCount)}</strong>/<strong>{formatCount(trackedCount)}</strong>
+          <strong>{formatCount(actualCount)}</strong>
+          {Number.isFinite(Number(trackedCount)) ? (
+            <>
+              /<strong>{formatCount(trackedCount)}</strong>
+            </>
+          ) : null}
           <AirplaneIcon className="summary-inline-icon summary-airplane-icon" />
           {' planes airborne'}
         </p>
@@ -1134,9 +1364,17 @@ function EmergencySummary({
   )
 }
 
-function ArchiveChart({ data, signal }) {
+function ArchiveChart({ data, signal, holidayWindows = [] }) {
   const archiveData = useMemo(() => normalizeDashboardArchive(data), [data])
-  return <ArchiveChartPanel key={`archive-${archiveData.length}`} data={archiveData} signal={signal} defaultWindowDays={3} />
+  return (
+    <ArchiveChartPanel
+      key={`archive-${archiveData.length}`}
+      data={archiveData}
+      signal={signal}
+      holidayWindows={holidayWindows}
+      defaultWindowDays={3}
+    />
+  )
 }
 
 function getArchivePositionSnapDays(windowDays) {
@@ -1158,7 +1396,7 @@ function snapArchiveEndDaysAgo(value, snapDays, maxEndDaysAgo) {
   return clamp(snappedEndDaysAgo, 0, maxAlignedEndDaysAgo)
 }
 
-function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
+function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) {
   const hasData = data.length > 0
   const sampledAtTimestamps = useMemo(() => data.map((sample) => Date.parse(sample.sampledAt || 0)), [data])
   const latestTimestamp = sampledAtTimestamps[sampledAtTimestamps.length - 1] || 0
@@ -1166,6 +1404,7 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
   const maxDaysAvailable = Math.max(1, Math.ceil((latestTimestamp - earliestTimestamp) / ARCHIVE_DAY_MS))
   const [archiveWindowDays, setArchiveWindowDaysState] = useState(defaultWindowDays)
   const [endDaysAgo, setEndDaysAgo] = useState(0)
+  const [sharedHoverIndex, setSharedHoverIndex] = useState(null)
   const effectiveWindowDays = clamp(archiveWindowDays, 1, maxDaysAvailable)
   const maxEndDaysAgo = Math.max(0, maxDaysAvailable - effectiveWindowDays)
   const archivePositionSnapDays = getArchivePositionSnapDays(archiveWindowDays)
@@ -1180,6 +1419,7 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
   const primaryLineWidth = isDenseWindow ? 1.45 : 2.5
   const secondaryLineWidth = isDenseWindow ? 1.15 : 2
   const referenceLineWidth = isDenseWindow ? 0.75 : 1
+  const showWeeklyBaselineBand = PREDICTION_BAND_MODELS.has(signal?.concurrentPredictionModel)
 
   function setArchiveWindowDays(nextWindowDays) {
     const nextWindowDaysClamped = clamp(nextWindowDays, 1, maxDaysAvailable)
@@ -1209,6 +1449,23 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
       visibleEnd: slicedData[slicedData.length - 1]?.sampledAt,
     }
   }, [clampedEndDaysAgo, data, latestTimestamp, sampledAtTimestamps, startDaysAgo])
+  const visibleHoverIndex =
+    sharedHoverIndex != null && sharedHoverIndex >= 0 && sharedHoverIndex < visibleData.length
+      ? sharedHoverIndex
+      : null
+  const visibleHolidayWindows = useMemo(() => {
+    const visibleStartMs = Date.parse(visibleStart)
+    const visibleEndMs = Date.parse(visibleEnd)
+    if (!Number.isFinite(visibleStartMs) || !Number.isFinite(visibleEndMs)) {
+      return []
+    }
+
+    return holidayWindows.filter((window) => {
+      const startsAt = Date.parse(window.startsAt)
+      const endsAt = Date.parse(window.endsAt)
+      return Number.isFinite(startsAt) && Number.isFinite(endsAt) && endsAt >= visibleStartMs && startsAt <= visibleEndMs
+    })
+  }, [holidayWindows, visibleEnd, visibleStart])
   const emergencyLevelReferenceLines = buildEmergencyLevelReferenceLines(referenceLineWidth)
   const getSampleEmergencyLevel = (sample) => getContinuousEmergencyLevel(sample.sigmaShift, signal?.alarmSigmaThreshold)
 
@@ -1302,6 +1559,17 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
           data={visibleData}
           height={ARCHIVE_CHART_HEIGHT}
           windowDays={visibleWindowDays}
+          regions={visibleHolidayWindows}
+          hoverIndex={visibleHoverIndex}
+          onHoverIndexChange={setSharedHoverIndex}
+          bands={showWeeklyBaselineBand ? [
+            {
+              name: 'Prediction standard deviation',
+              lowerAccessor: (sample) => sample.predictedConcurrentCount - sample.predictedConcurrentStdDev,
+              upperAccessor: (sample) => sample.predictedConcurrentCount + sample.predictedConcurrentStdDev,
+              fill: CHART_PREDICTION_BAND_FILL,
+            },
+          ] : []}
           lines={[
             {
               name: 'Observed concurrent',
@@ -1319,9 +1587,12 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
           ]}
           tooltipFormatter={(sample) => (
             <>
-              <strong>{formatTimestamp(sample.sampledAt)}</strong>
+              <strong>{formatTimestamp(sample.sampledAt, { weekday: true })}</strong>
               <span>Observed: {formatCount(sample.concurrentCount)}</span>
               <span>Predicted: {formatCount(sample.predictedConcurrentCount)}</span>
+              {showWeeklyBaselineBand && Number.isFinite(sample.predictedConcurrentStdDev) ? (
+                <span>Std dev: +/- {formatCount(sample.predictedConcurrentStdDev)}</span>
+              ) : null}
             </>
           )}
         />
@@ -1336,6 +1607,8 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
             data={visibleData}
             height={ARCHIVE_DIVERGENCE_HEIGHT}
             windowDays={visibleWindowDays}
+            hoverIndex={visibleHoverIndex}
+            onHoverIndexChange={setSharedHoverIndex}
             yAxisTicks={emergencyLevelReferenceLines.map((line) => ({
               value: line.value,
               label: line.label,
@@ -1358,7 +1631,7 @@ function ArchiveChartPanel({ data, signal, defaultWindowDays }) {
             ]}
             tooltipFormatter={(sample) => (
               <>
-                <strong>{formatTimestamp(sample.sampledAt)}</strong>
+                <strong>{formatTimestamp(sample.sampledAt, { weekday: true })}</strong>
                 <span>Level: {formatEmergencyLevel(getSampleEmergencyLevel(sample))}</span>
                 <span>Difference: {formatDelta(sample.divergence)}</span>
                 <span>Sigma: {formatSigned(sample.sigmaShift)}</span>
@@ -1445,7 +1718,7 @@ const MapMarkerLayer = memo(function MapMarkerLayer({
   ))
 })
 
-function GlobalMap({ aircraft }) {
+function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   const isNarrowLayout = useIsNarrowLayout()
   const [selectedPlaneHex, setSelectedPlaneHex] = useState(null)
   const [hoveredPlaneHex, setHoveredPlaneHex] = useState(null)
@@ -1674,10 +1947,20 @@ function GlobalMap({ aircraft }) {
   return (
     <section className="panel map-panel">
       <div className="panel-header">
-        <div><h2>Realtime Tracker</h2></div>
+        <div><h2>{dataUnavailable ? 'ADSB Data Unavailable' : 'Realtime Tracker'}</h2></div>
       </div>
 
       <div className="map-frame">
+        {dataUnavailable ? (
+          <div className="map-unavailable-state">
+            <strong>ADSB Data Unavailable</strong>
+            <span>
+              ADS-B Exchange has not delivered a fresh heatmap recently, so live aircraft positions are paused.
+              {liveStatus?.latestSampledAt ? ` Last cached sample: ${formatTimestamp(liveStatus.latestSampledAt)}.` : ''}
+            </span>
+          </div>
+        ) : (
+          <>
         <div className="map-controls" aria-label="Map controls">
           <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomToVisibleAircraftCentroid(MAP_ZOOM_STEP)} aria-label="Zoom in">
             <span className="map-zoom-icon map-zoom-plus" aria-hidden="true" />
@@ -1745,6 +2028,8 @@ function GlobalMap({ aircraft }) {
             />
           </g>
         </svg>
+          </>
+        )}
       </div>
     </section>
   )
@@ -1777,22 +2062,27 @@ function PersonIcon({ className = 'model-person-icon' }) {
   )
 }
 
-function ModelSummaryList({ aircraft }) {
+function ModelSummaryList({ aircraft, copy }) {
   const modelSummary = buildLiveModelSummary(aircraft)
+  const showPassengerDetails = copy?.showSeatEstimate ?? true
 
   return (
     <section className="panel list-panel">
       <div className="panel-header">
-        <div><h2>Aircraft By Model</h2></div>
+        <div><h2>{copy?.modelSummaryTitle || 'Aircraft By Model'}</h2></div>
         <span className="map-badge">{formatCount(modelSummary.length)} types</span>
       </div>
       {modelSummary.length ? (
         <ul className="flight-list model-list">
           {modelSummary.map((entry) => {
             const wikipediaUrl =
-              entry.rank <= AIRCRAFT_MODEL_DETAIL_RANK_LIMIT ? getAircraftModelWikipediaUrl(entry.modelLabel) : null
+              showPassengerDetails && entry.rank <= AIRCRAFT_MODEL_DETAIL_RANK_LIMIT
+                ? getAircraftModelWikipediaUrl(entry.modelLabel)
+                : null
             const maxPassengers =
-              entry.rank <= AIRCRAFT_MODEL_DETAIL_RANK_LIMIT ? getAircraftModelMaxPassengers(entry.modelLabel) : null
+              showPassengerDetails && entry.rank <= AIRCRAFT_MODEL_DETAIL_RANK_LIMIT
+                ? getAircraftModelMaxPassengers(entry.modelLabel)
+                : null
 
             return (
               <li key={entry.modelLabel}>
@@ -1831,15 +2121,16 @@ function ModelSummaryList({ aircraft }) {
         </ul>
       ) : (
         <div className="empty-state">
-          No tracked aircraft are currently airborne in the latest cached heatmap.
+          {copy?.emptyLiveText || 'No tracked aircraft are currently airborne in the latest cached heatmap.'}
         </div>
       )}
     </section>
   )
 }
 
-function AboutSystemCard({ cohort }) {
+function AboutSystemCard({ cohort, copy }) {
   const isGlobalCohort = cohort?.source === 'global_business_jet' || Number(cohort?.globalCount || 0) > 0
+  const cohortKind = getCohortKind(cohort)
 
   return (
     <section className="panel about-panel">
@@ -1848,9 +2139,17 @@ function AboutSystemCard({ cohort }) {
       </div>
       <div className="about-copy">
         <p>
-          This site watches a fixed cohort of business jets and asks a simple question: is the number currently airborne
-          unusual for this time? It is not tracking all aircraft. The tracked set is built from{' '}
-          {isGlobalCohort ? (
+          This site watches {copy.trackedDescription} and asks a simple question: is the number currently airborne
+          unusual for this time? {cohortKind === 'untracked' ? 'It is tracking all visible non-ICAO addresses, not all aircraft.' : 'It is not tracking all aircraft.'} The tracked set is built from{' '}
+          {cohortKind === 'military' ? (
+            <>
+              public global aircraft metadata, ADS-B Exchange lookups, and Mictronics/tar1090 records
+            </>
+          ) : cohortKind === 'untracked' ? (
+            <>
+              ADS-B Exchange heatmaps by selecting records with readsb non-ICAO <code>~hex</code> addresses
+            </>
+          ) : isGlobalCohort ? (
             <>
               public global aircraft metadata, ADS-B Exchange lookups, Mictronics/tar1090 records, and{' '}
               <a
@@ -1870,15 +2169,22 @@ function AboutSystemCard({ cohort }) {
               FAA registry data
             </a>
           )}{' '}
-          with a practical business-jet filter, and each aircraft is matched by its{' '}
-          <a
-            href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address"
-            target="_blank"
-            rel="noreferrer"
-          >
-            ICAO hex identifier
-          </a>
-          .
+          with {copy.filterDescription}.{' '}
+          {cohortKind === 'untracked' ? (
+            <>Those addresses are tracked as observed, even when the underlying aircraft identity is unknown.</>
+          ) : (
+            <>
+              Each aircraft is matched by its{' '}
+              <a
+                href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address"
+                target="_blank"
+                rel="noreferrer"
+              >
+                ICAO hex identifier
+              </a>
+              .
+            </>
+          )}
         </p>
         <p>
           The flight data comes from{' '}
@@ -1886,12 +2192,11 @@ function AboutSystemCard({ cohort }) {
             ADS-B Exchange
           </a>{' '}
           heatmap files. Those files are published in half-hour slots and encode recent aircraft positions. The backend
-          downloads the newest available heatmap, parses it, matches the aircraft in the heatmap against the tracked
-          cohort, and stores the latest position, altitude, speed, heading, and airborne state for each match.
+          downloads the newest available heatmap, parses it, {cohortKind === 'untracked' ? 'selects non-ICAO records' : 'matches the aircraft in the heatmap against the tracked cohort'}, and stores the latest position, altitude, speed, heading, and airborne state for each match.
         </p>
         <p>
           Historical context comes from the same heatmap format. The backfill job walks through previous half-hour slots,
-          counts how many tracked aircraft were airborne, and records those counts in SQLite. The dashboard then compares
+          counts how many {copy.trackedNoun} were airborne, and records those counts in SQLite. The dashboard then compares
           the current concurrent airborne count with a recent baseline for similar times of day and week.
         </p>
         <p>
@@ -1900,15 +2205,17 @@ function AboutSystemCard({ cohort }) {
           a larger count can matter less when that time slot is usually noisy. The emergency level is a compact display of
           that same standardized signal.
         </p>
-        <p>
-          The max-people estimate is intentionally rough. It maps known aircraft model labels to published maximum
-          passenger capacities, sums the known matches, and scales missing capacities by the known average. It is a maximum
-          seat estimate, not a passenger manifest.
-        </p>
+        {copy.showSeatEstimate ? (
+          <p>
+            The max-people estimate is intentionally rough. It maps known aircraft model labels to published maximum
+            passenger capacities, sums the known matches, and scales missing capacities by the known average. It is a maximum
+            seat estimate, not a passenger manifest.
+          </p>
+        ) : null}
         <p>
           There are important limits. ADS-B coverage can be incomplete, aircraft may be blocked or misidentified, heatmaps
-          arrive in coarse half-hour windows, and the {isGlobalCohort ? 'global' : 'FAA-derived'} cohort is a heuristic
-          rather than a perfect definition of every relevant private jet. The dashboard is best read as an anomaly monitor
+          arrive in coarse half-hour windows, and the {copy.sourceShort} cohort is a heuristic
+          rather than a perfect definition of every relevant {copy.trackedSingular}. The dashboard is best read as an anomaly monitor
           for public flight signals, not as proof of intent, destination, ownership activity, or who is on board.
         </p>
         <p className="about-credit">
@@ -1922,6 +2229,113 @@ function AboutSystemCard({ cohort }) {
           </a>
           .
         </p>
+      </div>
+    </section>
+  )
+}
+
+function FaqCard() {
+  return (
+    <section className="panel faq-panel">
+      <div className="panel-header">
+        <div><h2>FAQ</h2></div>
+      </div>
+      <div className="faq-list">
+        <article>
+          <h3>Is this trying to detect missiles that are already inbound?</h3>
+          <p>
+            No. The useful signal would be earlier behavior: people or institutions acting on information hours or days
+            before it becomes obvious publicly. Several Hacker News replies made this distinction; this is an anomaly
+            monitor, not a replacement for official emergency alerts.
+          </p>
+        </article>
+        <article>
+          <h3>Would flying actually be a good survival plan?</h3>
+          <p>
+            Probably not in many nuclear scenarios. Airports can be targets, travel to an airport can be slow, and shelter
+            may be safer than moving. The dashboard does not recommend flying; it only watches whether public flight
+            activity changes in a way that is unusual for the calendar and time of week.
+          </p>
+        </article>
+        <article>
+          <h3>Would EMP immediately destroy airplanes?</h3>
+          <p>
+            Aircraft are generally more robust than consumer electronics because certified airplanes already need
+            lightning protection.{' '}
+            <a href="https://www.law.cornell.edu/cfr/text/14/25.1316" target="_blank" rel="noreferrer">
+              FAA lightning-protection rules
+            </a>{' '}
+            require important electrical and electronic systems to withstand or recover from lightning exposure. That
+            does not prove immunity to every nuclear EMP case, but aircraft are not inherently fragile in the way a laptop
+            or phone might be.
+          </p>
+        </article>
+        <article>
+          <h3>Why look at aircraft instead of news or prediction markets?</h3>
+          <p>
+            This should be read alongside other public signals. Prediction markets may react quickly to insider knowledge;
+            reporting about Iran-war bets described unusually well-timed wagers around military and oil-price events. This
+            model is designed to tolerate normal one- or two-day increases in activity, including holiday travel, so a
+            short surge has to be unusual relative to similar historical windows before it meaningfully moves the level.
+          </p>
+        </article>
+        <article>
+          <h3>Does level 5 mean an apocalypse is likely?</h3>
+          <p>
+            No. Level 5 means the current count is an extreme positive outlier under this model. It can still be caused by
+            holidays, major sporting or political events, data artifacts, or cohort mistakes. The archive is included so
+            those historical false positives are visible.
+          </p>
+        </article>
+        <p className="faq-source-note">
+          Context: the public discussion on{' '}
+          <a href="https://news.ycombinator.com/item?id=47976566" target="_blank" rel="noreferrer">
+            Hacker News
+          </a>{' '}
+          and reporting from{' '}
+          <a href="https://www.theguardian.com/world/2026/apr/18/iran-war-bets-ethics-concerns" target="_blank" rel="noreferrer">
+            The Guardian
+          </a>
+          .
+        </p>
+      </div>
+    </section>
+  )
+}
+
+function UpdatesCard({ copy }) {
+  return (
+    <section className="panel updates-panel">
+      <div className="panel-header">
+        <div><h2>Updates</h2></div>
+      </div>
+      <div className="updates-copy">
+        <article className="update-entry">
+          <h3>May 5, 2026</h3>
+          <p>
+            The dashboard now uses the {copy.sourceShort} dataset, a dense-history weekly baseline, U.S. federal
+            holiday half-hour profiles, and linked archive hover. The model is less dependent on a short recent window
+            and compensates around New Year&apos;s Day, MLK Day, Washington&apos;s Birthday, Memorial Day, Juneteenth,
+            Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, and Christmas.
+          </p>
+          <p>
+            The holiday correction learns each holiday&apos;s local time-of-day shape from older holiday-only backfills.
+            Ordinary weekly traffic is learned from the continuous recent history, while predictable holiday travel
+            windows such as late-night Thanksgiving arrivals and the New Year&apos;s return period are modeled separately.
+            The prediction band also includes historical holiday-profile uncertainty, so holiday
+            periods that vary a lot from year to year are treated as less surprising.
+          </p>
+          <p>
+            Emergency level is now based on a calibrated excess score instead of raw time-slot surprise alone. Let{' '}
+            <code>O</code> be observed planes, <code>P</code> predicted planes, <code>S</code> model standard deviation,
+            <code>F = median(|O - P|)</code> over historical residuals, and{' '}
+            <code>A = median(O - P | O &gt; P)</code>. Then{' '}
+            <code>D = O - P</code>, <code>S_eff = max(S, F)</code>,{' '}
+            <code>W = D &gt; 0 ? D / (D + A) : 1</code>, and{' '}
+            <code>Z = D &gt; 0 ? (D / S_eff) * W : D / S_eff</code>. The 1-5 emergency level maps positive{' '}
+            <code>Z</code> against the alarm threshold calibrated from trailing-year daily peaks.
+          </p>
+        </article>
       </div>
     </section>
   )
@@ -2234,8 +2648,11 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
     content = document.getElementById('initial-loader') ? null : <LoadingAnimation />
   } else {
     const archiveData = dashboard.trends?.archive ?? []
+    const holidayWindows = dashboard.trends?.holidayWindows ?? []
     const liveAircraft = dashboard.liveAircraft ?? []
     const liveStatus = dashboard.liveStatus ?? null
+    const cohortCopy = getCohortCopy(dashboard.cohort)
+    const adsbDataStatus = getAdsbDataUnavailableStatus(liveStatus)
     const compositeSignal = dashboard.signals?.composite ?? {
       asOf: dashboard.current?.asOf,
       actualConcurrentCount: dashboard.current?.concurrentCount,
@@ -2245,7 +2662,9 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
       alertLevel: dashboard.current?.alertLevel,
       emergencyLevel: dashboard.current?.emergencyLevel,
     }
-    const maxSeatsAirborneEstimate = estimateMaxSeatsAirborne(liveAircraft, compositeSignal.actualConcurrentCount)
+    const maxSeatsAirborneEstimate = cohortCopy.showSeatEstimate
+      ? estimateMaxSeatsAirborne(liveAircraft, compositeSignal.actualConcurrentCount)
+      : null
 
     content = (
       <main className="app-shell">
@@ -2277,10 +2696,7 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
           <section className="panel hero-copy-panel">
             <h1>Apocalypse Early Warning System</h1>
             <p className="hero-caption">
-              In the event of an imminent nuclear apocalypse, we suspect that many people who have access to private jets
-              will immediately take to the skies and escape city centers. This site tracks this indicator in realtime.
-              The current emergency level is reported on a scale of 1 to 5, with 5 being an indicator of a likely
-              imminent apocalypse.
+              {cohortCopy.heroCaption}
             </p>
             <p className="hero-credit">
               built by{' '}
@@ -2298,6 +2714,10 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
               /{' '}
               <a href="https://ews.kylemcdonald.net/rss.xml" target="_blank" rel="noreferrer">
                 RSS
+              </a>{' '}
+              /{' '}
+              <a href={DISCORD_BOT_URL} target="_blank" rel="noreferrer">
+                Discord Bot
               </a>
             </p>
           </section>
@@ -2315,13 +2735,19 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
         </section>
 
         <section className="focus-map-grid">
-          <GlobalMap aircraft={liveAircraft} />
+          <GlobalMap
+            aircraft={liveAircraft}
+            dataUnavailable={adsbDataStatus.isUnavailable}
+            liveStatus={liveStatus}
+          />
         </section>
 
         <section className="details-stack">
-          <ArchiveChart data={archiveData} signal={compositeSignal} />
-          <ModelSummaryList aircraft={liveAircraft} />
-          <AboutSystemCard cohort={dashboard.cohort} />
+          <ArchiveChart data={archiveData} signal={compositeSignal} holidayWindows={holidayWindows} />
+          <ModelSummaryList aircraft={liveAircraft} copy={cohortCopy} />
+          <AboutSystemCard cohort={dashboard.cohort} copy={cohortCopy} />
+          <FaqCard />
+          <UpdatesCard copy={cohortCopy} />
         </section>
       </main>
     )
@@ -2342,6 +2768,14 @@ function App() {
 
   if (window.location.pathname === '/beta' || window.location.pathname.startsWith('/beta/')) {
     return <DashboardApp dashboardUrl={BETA_DASHBOARD_URL} />
+  }
+
+  if (window.location.pathname === '/military' || window.location.pathname.startsWith('/military/')) {
+    return <DashboardApp dashboardUrl={MILITARY_DASHBOARD_URL} />
+  }
+
+  if (window.location.pathname === '/untracked' || window.location.pathname.startsWith('/untracked/')) {
+    return <DashboardApp dashboardUrl={UNTRACKED_DASHBOARD_URL} />
   }
 
   return <DashboardApp />
