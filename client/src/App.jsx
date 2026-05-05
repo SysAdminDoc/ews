@@ -3550,8 +3550,6 @@ function App() {
   }
 
   if (
-    window.location.pathname === '/beta' ||
-    window.location.pathname.startsWith('/beta/') ||
     window.location.pathname === '/military' ||
     window.location.pathname.startsWith('/military/') ||
     window.location.pathname === '/untracked' ||

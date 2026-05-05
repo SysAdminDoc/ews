@@ -31,7 +31,7 @@ app.use(cors());
 app.use(express.json());
 
 app.use((request, response, next) => {
-  const legacyDashboardRoutes = ["/beta", "/military", "/untracked"];
+  const legacyDashboardRoutes = ["/military", "/untracked"];
   if (
     legacyDashboardRoutes.some(
       (routePath) => request.path === routePath || request.path.startsWith(`${routePath}/`),
@@ -198,12 +198,6 @@ for (const [routePath, fileName] of PUBLISHED_DASHBOARD_FILES) {
       .sendFile(snapshotPath);
   });
 }
-
-app.get("/beta-dashboard.json", (_request, response) => {
-  response.status(410).json({
-    error: "The beta dashboard snapshot has been merged into /dashboard.json.",
-  });
-});
 
 app.get(["/rss.xml", "/feed.xml"], (_request, response) => {
   response

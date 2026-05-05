@@ -8,7 +8,7 @@ import sqlite3
 
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
-DB_PATH = ROOT_DIR / "data" / "ews.sqlite"
+DB_PATH = ROOT_DIR / "data" / "ews-main.sqlite"
 HALF_HOUR_SECONDS = 30 * 60
 
 
@@ -20,7 +20,7 @@ def parse_args():
         "--db",
         action="append",
         default=[],
-        help="SQLite DB to audit. May be repeated. Defaults to data/ews.sqlite.",
+        help="SQLite DB to audit. May be repeated. Defaults to data/ews-main.sqlite.",
     )
     parser.add_argument(
         "--slots",

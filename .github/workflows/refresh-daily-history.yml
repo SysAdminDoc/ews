@@ -17,7 +17,7 @@ env:
   TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
   PUBLIC_BUCKET: ews-public
   STATE_BUCKET: ews-state
-  MAIN_DB_PATH: data/ews-beta.sqlite
+  MAIN_DB_PATH: data/ews-main.sqlite
   MILITARY_DB_PATH: data/ews-military.sqlite
   UNTRACKED_DB_PATH: data/ews-untracked.sqlite
   EWS_PUBLIC_URL: https://ews.kylemcdonald.net/
@@ -59,7 +59,7 @@ jobs:
         run: |
           mkdir -p data
           for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object get "${STATE_BUCKET}/ews-beta.sqlite" --file "${MAIN_DB_PATH}" --remote; then
+            if npx wrangler r2 object get "${STATE_BUCKET}/ews-main.sqlite" --file "${MAIN_DB_PATH}" --remote; then
               exit 0
             fi
             echo "R2 main restore attempt ${attempt} failed."
@@ -115,13 +115,13 @@ jobs:
             --slots 48
 
       - name: Export published dashboard snapshot
-        run: node scripts/export_beta_dashboard_snapshot.js --db "${MAIN_DB_PATH}" --output tmp/dashboard.json --endpoint main --cohort global_business_jet
+        run: node scripts/export_dashboard_snapshot.js --db "${MAIN_DB_PATH}" --output tmp/dashboard.json --endpoint main --cohort global_business_jet
 
       - name: Export published military dashboard snapshot
-        run: node scripts/export_beta_dashboard_snapshot.js --db "${MILITARY_DB_PATH}" --output tmp/military-dashboard.json --endpoint military --cohort global_military_aircraft
+        run: node scripts/export_dashboard_snapshot.js --db "${MILITARY_DB_PATH}" --output tmp/military-dashboard.json --endpoint military --cohort global_military_aircraft
 
       - name: Export published untracked dashboard snapshot
-        run: node scripts/export_beta_dashboard_snapshot.js --db "${UNTRACKED_DB_PATH}" --output tmp/untracked-dashboard.json --endpoint untracked --cohort non_icao_untracked
+        run: node scripts/export_dashboard_snapshot.js --db "${UNTRACKED_DB_PATH}" --output tmp/untracked-dashboard.json --endpoint untracked --cohort non_icao_untracked
 
       - name: Send Telegram emergency alert
         run: EWS_DB_PATH="${MAIN_DB_PATH}" node scripts/send_telegram_alert.js
@@ -137,7 +137,7 @@ jobs:
       - name: Upload main deployment state
         run: |
           for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object put "${STATE_BUCKET}/ews-beta.sqlite" --file "${MAIN_DB_PATH}" --remote; then
+            if npx wrangler r2 object put "${STATE_BUCKET}/ews-main.sqlite" --file "${MAIN_DB_PATH}" --remote; then
               exit 0
             fi
             echo "R2 main state upload attempt ${attempt} failed."

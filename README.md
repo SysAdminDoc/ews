@@ -14,13 +14,13 @@ This project now supports both local development and a low-cost public deploymen
 ## What is included
 
 - Demo mode: if no cohort has been imported yet, the dashboard serves synthetic review data
-- Main/global historical store: `data/ews-beta.sqlite`
+- Main/global historical store: `data/ews-main.sqlite`
 - Military historical store: `data/ews-military.sqlite`
 - Non-ICAO historical store: `data/ews-untracked.sqlite`
 - FAA importer: `scripts/import_faa_cohort.py`
 - Global importer: `scripts/import_global_cohort.py`
 - Backfill script: `scripts/backfill_history.py`
-- Snapshot exporter: `scripts/export_beta_dashboard_snapshot.js`
+- Snapshot exporter: `scripts/export_dashboard_snapshot.js`
 
 ## Quick start
 
@@ -46,10 +46,11 @@ npm run export:snapshot
 
 ## Real cohort setup
 
-1. Import the FAA-derived business-jet cohort:
+1. Import the global business-jet cohort:
 
 ```bash
 npm run import:faa
+npm run import:global
 ```
 
 2. Run a 365-day backfill:
@@ -63,17 +64,17 @@ Optional examples:
 ```bash
 python3 scripts/import_faa_cohort.py --refresh
 python3 scripts/import_global_cohort.py --dry-run
-python3 scripts/import_faa_cohort.py --db data/ews-beta.sqlite
-python3 scripts/import_global_cohort.py --db data/ews-beta.sqlite --refresh
+python3 scripts/import_faa_cohort.py --db data/ews-main.sqlite
+python3 scripts/import_global_cohort.py --db data/ews-main.sqlite --refresh
 python3 scripts/import_faa_cohort.py --min-seats 4 --max-seats 16
 python3 scripts/backfill_history.py --start-date 2025-04-07 --end-date 2026-04-07
-python3 scripts/backfill_history.py --db data/ews-beta.sqlite --start-date 2024-04-08 --end-date 2026-05-04 --keep-cache
+python3 scripts/backfill_history.py --db data/ews-main.sqlite --start-date 2024-04-08 --end-date 2026-05-04 --keep-cache
 python3 scripts/backfill_history.py --relative-days 1
 python3 scripts/backfill_history.py --skip-download
 python3 scripts/track_non_icao_hex.py --start-date 2026-04-20 --end-date 2026-05-01 --skip-download
 ```
 
-The default backfill reads tracked aircraft directly from SQLite, so once the FAA cohort is imported you do not need a separate watchlist file.
+The default backfill reads tracked aircraft directly from SQLite, so once the global cohort is imported you do not need a separate watchlist file.
 
 When the import or backfill starts, any previously seeded demo data is removed so it cannot pollute the real baseline.
 
@@ -103,7 +104,7 @@ npm run telegram:alert
 - The current “live” view also comes from ADS-B Exchange heatmaps, updated every 30 minutes and cached between refreshes.
 - The FAA importer uses a pragmatic business-jet heuristic so the tracked set excludes helicopters, props, large airliners, and government aircraft.
 - The global importer merges ADS-B Exchange and tar1090/Mictronics metadata into `aircraft_metadata`, classifies rows into broad categories such as `business_jet`, `large_airliner`, `regional_airliner`, `military`, and `non_jet_aircraft`, then adds only `business_jet` rows to the main tracked cohort.
-- The concurrent-count model includes a calendar-agnostic prior-year residual adjustment so recurrent seasonal disruptions can be learned without hardcoding holiday dates.
+- The concurrent-count model uses an all-history weekly baseline and learned half-hour profiles around U.S. federal holidays, with a standard-deviation band exported for the dashboard.
 - Non-ICAO `~hex` activity can be scanned into aggregate SQLite tables with `scripts/track_non_icao_hex.py`; rows are split by ADS-B/ADS-R/TIS-B message type so synthetic rebroadcast traffic can be analyzed separately from direct ADS-B reports.
 - The production build currently emits a large JS bundle warning because the map and chart stack are bundled together. The app still builds and runs locally.
 - `data/` is ignored so the SQLite file can be moved independently without checking it into source control.

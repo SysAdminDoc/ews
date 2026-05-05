@@ -16,7 +16,7 @@ from db_migrations import migrate_schema
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
-DB_PATH = DATA_DIR / "ews.sqlite"
+DB_PATH = DATA_DIR / "ews-main.sqlite"
 SCHEMA_PATH = ROOT_DIR / "schema.sql"
 FAA_DIR = DATA_DIR / "cache" / "faa"
 FAA_ZIP_PATH = FAA_DIR / "ReleasableAircraft.zip"

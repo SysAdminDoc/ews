@@ -16,7 +16,7 @@ from db_migrations import migrate_schema
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
-DB_PATH = DATA_DIR / "ews.sqlite"
+DB_PATH = DATA_DIR / "ews-main.sqlite"
 SCHEMA_PATH = ROOT_DIR / "schema.sql"
 AIRCRAFT_DB_DIR = DATA_DIR / "cache" / "aircraft_db"
 ADSBX_BASIC_DB_URL = "https://downloads.adsbexchange.com/downloads/basic-ac-db.json.gz"
