@@ -4,17 +4,23 @@ import { feature } from 'topojson-client'
 import worldAtlas from 'world-atlas/countries-110m.json'
 import './App.css'
 
-const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || '/api/dashboard'
-const BETA_DASHBOARD_URL = import.meta.env.VITE_BETA_DASHBOARD_URL || '/beta-dashboard.json'
+const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || '/dashboard.json'
 const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || '/military-dashboard.json'
 const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || '/untracked-dashboard.json'
 const DISCORD_BOT_URL = 'https://jamiew.github.io/apocalypse-ews-discord/'
+const COHORT_CONFIGS = [
+  { id: 'business', label: 'Business jets', dashboardUrl: DASHBOARD_URL },
+  { id: 'military', label: 'Military', dashboardUrl: MILITARY_DASHBOARD_URL },
+  { id: 'untracked', label: 'Untracked', dashboardUrl: UNTRACKED_DASHBOARD_URL },
+]
+const COHORT_LOADING_DELAY_MS = 1000
 const DASHBOARD_CACHE_BUSTER_MINUTES = 5
 const DASHBOARD_POLL_INTERVAL_MS = 5 * 60_000
 const MAP_WIDTH = 800
 const MAP_HEIGHT = 410
 const AIRCRAFT_MARKER_PATH = 'M0 -9 L2.2 -1.5 L8 1.2 L8 3.4 L1.8 2.1 L1.8 6.4 L4.2 8 L4.2 9 L0 7.5 L-4.2 9 L-4.2 8 L-1.8 6.4 L-1.8 2.1 L-8 3.4 L-8 1.2 L-2.2 -1.5 Z'
 const ARCHIVE_DAY_MS = 24 * 60 * 60 * 1000
+const ADSB_DATA_UNAVAILABLE_THRESHOLD_MS = ARCHIVE_DAY_MS
 const worldGeographies = feature(worldAtlas, worldAtlas.objects.countries).features
 
 const NARROW_HISTORY_BREAKPOINT = 820
@@ -49,6 +55,8 @@ const MAP_ZOOM_STEP = 1.45
 const MAP_MAX_ZOOM = MAP_ZOOM_STEP ** 5
 const EMERGENCY_LEVEL_COUNT = 5
 const EMERGENCY_SCHEME_TAP_WINDOW_MS = 700
+const MIN_ALARM_SIGMA_THRESHOLD = 4
+const DEFAULT_ALARM_SIGMA_THRESHOLD = 7
 const AIRCRAFT_MODEL_DETAIL_RANK_LIMIT = 40
 const AIRCRAFT_MODEL_WIKIPEDIA_URLS = new Map([
   ['BOMBARDIER AEROSPACE INC BD-100-1A10', 'https://en.wikipedia.org/wiki/Bombardier_Challenger_300'],
@@ -125,6 +133,27 @@ const AIRCRAFT_MODEL_WIKIPEDIA_URLS = new Map([
   ['ISRAEL AIRCRAFT INDUSTRIES GULFSTREAM 200', 'https://en.wikipedia.org/wiki/Gulfstream_G200'],
   ['TEXTRON AVIATION INC 700', 'https://en.wikipedia.org/wiki/Cessna_Citation_Longitude'],
   ['TEXTRON AVIATION INC. 525B', 'https://en.wikipedia.org/wiki/Cessna_CitationJet/M2'],
+  ['AERMACCHI M-346 MASTER', 'https://en.wikipedia.org/wiki/Alenia_Aermacchi_M-346_Master'],
+  ['ALENIA AERMACCHI M-346 MASTER', 'https://en.wikipedia.org/wiki/Alenia_Aermacchi_M-346_Master'],
+  ['BEECH C-12R HURON', 'https://en.wikipedia.org/wiki/Beechcraft_C-12_Huron'],
+  ['BEECH C-12V HURON', 'https://en.wikipedia.org/wiki/Beechcraft_C-12_Huron'],
+  ['BEECH T-44A PEGASUS', 'https://en.wikipedia.org/wiki/Beechcraft_King_Air#T-44_Pegasus'],
+  ['BELL-BOEING V-22 OSPREY', 'https://en.wikipedia.org/wiki/Bell_Boeing_V-22_Osprey'],
+  ['BOEING C-17A GLOBEMASTER III', 'https://en.wikipedia.org/wiki/Boeing_C-17_Globemaster_III'],
+  ['BOEING-VERTOL CH-47 CHINOOK', 'https://en.wikipedia.org/wiki/Boeing_CH-47_Chinook'],
+  ['BRITISH AEROSPACE T-45 GOSHAWK', 'https://en.wikipedia.org/wiki/McDonnell_Douglas_T-45_Goshawk'],
+  ['EMBRAER EMB-312 TUCANO', 'https://en.wikipedia.org/wiki/Embraer_EMB_312_Tucano'],
+  ['EUROCOPTER UH-72A LAKOTA', 'https://en.wikipedia.org/wiki/Eurocopter_UH-72_Lakota'],
+  ['LOCKHEED C-130H HERCULES', 'https://en.wikipedia.org/wiki/Lockheed_C-130_Hercules'],
+  ['MCDONNELL DOUGLAS AH-64 APACHE', 'https://en.wikipedia.org/wiki/Boeing_AH-64_Apache'],
+  ['MCDONNELL DOUGLAS C-17A GLOBEMASTER III', 'https://en.wikipedia.org/wiki/Boeing_C-17_Globemaster_III'],
+  ['NORTHROP T-38C TALON', 'https://en.wikipedia.org/wiki/Northrop_T-38_Talon'],
+  ['RAYTHEON CT-156 HARVARD II', 'https://en.wikipedia.org/wiki/Beechcraft_T-6_Texan_II'],
+  ['RAYTHEON T-6A TEXAN II', 'https://en.wikipedia.org/wiki/Beechcraft_T-6_Texan_II'],
+  ['RAYTHEON T-6B TEXAN II', 'https://en.wikipedia.org/wiki/Beechcraft_T-6_Texan_II'],
+  ['SIKORSKY MH-60R SEAHAWK', 'https://en.wikipedia.org/wiki/Sikorsky_SH-60_Seahawk'],
+  ['SIKORSKY UH-60 BLACK HAWK', 'https://en.wikipedia.org/wiki/Sikorsky_UH-60_Black_Hawk'],
+  ['SIKORSKY UH-60M BLACK HAWK', 'https://en.wikipedia.org/wiki/Sikorsky_UH-60_Black_Hawk'],
 ])
 const AIRCRAFT_MODEL_MAX_PASSENGERS = new Map([
   ['BOMBARDIER AEROSPACE INC BD-100-1A10', 10],
@@ -343,6 +372,10 @@ function getAircraftModelMaxPassengers(modelLabel) {
 }
 
 function getCohortKind(cohort) {
+  if (cohort?.cohortType === 'combined' || cohort?.source === 'combined_selected_aircraft') {
+    return 'combined'
+  }
+
   if (cohort?.cohortType === 'military' || cohort?.source === 'global_military_aircraft') {
     return 'military'
   }
@@ -356,6 +389,28 @@ function getCohortKind(cohort) {
 
 function getCohortCopy(cohort) {
   const kind = getCohortKind(cohort)
+  if (kind === 'combined') {
+    return {
+      kind,
+      trackedNoun: 'selected aircraft',
+      trackedSingular: 'selected aircraft',
+      trackedDescription: 'the currently selected aircraft categories',
+      filterDescription: 'category-specific filters',
+      sourceDescription: 'public aircraft metadata and ADS-B Exchange heatmaps',
+      sourceShort: 'selected-category',
+      modelSummaryTitle: 'Aircraft By Model',
+      emptyLiveText: 'No identified selected aircraft are currently airborne in the latest cached heatmap.',
+      showSeatEstimate: true,
+      heroCaption: (
+        <>
+          In the event of an imminent nuclear apocalypse, we suspect that unusual aircraft activity may appear across
+          multiple public flight signals. This view can combine business jets, military aircraft, and non-ICAO addresses
+          while recalibrating the emergency level for the selected total.
+        </>
+      ),
+    }
+  }
+
   if (kind === 'military') {
     return {
       kind,
@@ -423,14 +478,11 @@ function getCohortCopy(cohort) {
 
 function getAdsbDataUnavailableStatus(liveStatus) {
   const latestTimestamp = Date.parse(liveStatus?.latestSampledAt || 0)
-  const cadenceMinutes = Number(liveStatus?.cadenceMinutes || 30)
-  const maxAgeMs = Math.max(cadenceMinutes * 4 * 60 * 1000, 2 * 60 * 60 * 1000)
   const ageMs = Date.now() - latestTimestamp
-  const isStale = !Number.isFinite(latestTimestamp) || ageMs > maxAgeMs
-  const isUnavailable = Boolean(liveStatus?.lastError) || isStale
+  const isStale = !Number.isFinite(latestTimestamp) || ageMs > ADSB_DATA_UNAVAILABLE_THRESHOLD_MS
 
   return {
-    isUnavailable,
+    isUnavailable: isStale,
     isStale,
     ageMs: Number.isFinite(ageMs) ? ageMs : null,
   }
@@ -469,6 +521,23 @@ function estimateMaxSeatsAirborne(aircraft, totalAircraftCountOverride = null) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
+}
+
+function quantile(values, percentile) {
+  const finiteValues = values.filter((value) => Number.isFinite(value)).sort((left, right) => left - right)
+  if (!finiteValues.length) {
+    return null
+  }
+
+  const index = (finiteValues.length - 1) * percentile
+  const lowerIndex = Math.floor(index)
+  const upperIndex = Math.ceil(index)
+  const fraction = index - lowerIndex
+  return finiteValues[lowerIndex] + (finiteValues[upperIndex] - finiteValues[lowerIndex]) * fraction
+}
+
+function median(values) {
+  return quantile(values, 0.5)
 }
 
 function clearCurrentTextSelection() {
@@ -793,6 +862,7 @@ function ArchiveSvgChart({
   data,
   height,
   windowDays,
+  yDomainMin = null,
   yTickFormatter = (value) => String(value),
   lines = [],
   bands = [],
@@ -883,16 +953,32 @@ function ArchiveSvgChart({
       allValues.push(0, 1)
     }
 
-    const minValue = Math.min(...allValues)
-    const maxValue = Math.max(...allValues)
-    const domainTicks = buildNumericTicks(minValue, maxValue, 5)
+    const forcedYMin = Number.isFinite(yDomainMin) ? yDomainMin : null
+    const minValue = forcedYMin ?? Math.min(...allValues)
+    const maxObservedValue = Math.max(...allValues)
+    const maxValue = forcedYMin == null ? maxObservedValue : Math.max(maxObservedValue, forcedYMin + 1)
+    let domainTicks = buildNumericTicks(minValue, maxValue, 5)
+
+    if (forcedYMin != null) {
+      domainTicks = domainTicks.filter((value) => value >= forcedYMin)
+      if (!domainTicks.length || domainTicks[0] !== forcedYMin) {
+        domainTicks = [forcedYMin, ...domainTicks.filter((value) => value > forcedYMin)]
+      }
+      if (domainTicks.length === 1) {
+        domainTicks.push(forcedYMin + 1)
+      }
+    }
+
     const yTicks = visibleYAxisTicks || domainTicks.map((value) => ({ value, label: yTickFormatter(value) }))
-    const yMin = domainTicks[0]
+    const yMin = forcedYMin ?? domainTicks[0]
     const yMax = domainTicks[domainTicks.length - 1]
     const xTicks = buildArchiveTimeTicks(xMin, xMax, windowDays, isNarrowLayout)
     const xScale = (index) => margin.left + ((timestamps[index] - xMin) / Math.max(1, xMax - xMin)) * innerWidth
     const xScaleFromTimestamp = (timestamp) => margin.left + ((timestamp - xMin) / Math.max(1, xMax - xMin)) * innerWidth
-    const yScale = (value) => margin.top + innerHeight - ((value - yMin) / Math.max(1e-9, yMax - yMin)) * innerHeight
+    const yScale = (value) => {
+      const clampedValue = forcedYMin == null ? value : Math.max(value, forcedYMin)
+      return margin.top + innerHeight - ((clampedValue - yMin) / Math.max(1e-9, yMax - yMin)) * innerHeight
+    }
 
     return {
       width,
@@ -913,7 +999,7 @@ function ArchiveSvgChart({
       yMax,
       referenceLines: referenceLines.filter((referenceLine) => Number.isFinite(referenceLine.value)),
     }
-  }, [area, bands, data, height, isNarrowLayout, lines, referenceLines, showZeroLine, windowDays, yAxisTicks, yTickFormatter])
+  }, [area, bands, data, height, isNarrowLayout, lines, referenceLines, showZeroLine, windowDays, yAxisTicks, yDomainMin, yTickFormatter])
 
   if (!chartState) {
     return null
@@ -1031,6 +1117,21 @@ function ArchiveSvgChart({
             strokeDasharray="5 5"
           />
         ) : null}
+        {area ? (
+          <path
+            d={buildSvgAreaPath(data, chartState.xScale, chartState.yScale, area.accessor, area.baselineValue)}
+            fill={area.fill}
+            stroke="none"
+          />
+        ) : null}
+        {bands.map((band) => (
+          <path
+            key={band.name}
+            d={buildSvgBandPath(data, chartState.xScale, chartState.yScale, band.lowerAccessor, band.upperAccessor)}
+            fill={band.fill}
+            stroke="none"
+          />
+        ))}
         {regions.map((region) => {
           const startsAt = Date.parse(region.startsAt)
           const endsAt = Date.parse(region.endsAt)
@@ -1066,21 +1167,6 @@ function ArchiveSvgChart({
             </g>
           )
         })}
-        {area ? (
-          <path
-            d={buildSvgAreaPath(data, chartState.xScale, chartState.yScale, area.accessor, area.baselineValue)}
-            fill={area.fill}
-            stroke="none"
-          />
-        ) : null}
-        {bands.map((band) => (
-          <path
-            key={band.name}
-            d={buildSvgBandPath(data, chartState.xScale, chartState.yScale, band.lowerAccessor, band.upperAccessor)}
-            fill={band.fill}
-            stroke="none"
-          />
-        ))}
         {chartState.referenceLines.map((referenceLine) => (
           <line
             key={`reference-${referenceLine.label}-${referenceLine.value}`}
@@ -1177,20 +1263,24 @@ function useIsNarrowLayout(breakpoint = NARROW_HISTORY_BREAKPOINT) {
 
 function buildLiveModelSummary(aircraft) {
   const grouped = new Map()
+  const modelAircraft = aircraft.filter((plane) => plane?.cohortKind !== 'untracked')
 
-  for (const plane of aircraft) {
+  for (const plane of modelAircraft) {
     const modelLabel = normalizeModelLabel(plane.label || plane.registration || plane.hex?.toUpperCase())
-    const existing = grouped.get(modelLabel) || { modelLabel, count: 0 }
+    const existing = grouped.get(modelLabel) || { modelLabel, count: 0, cohortKinds: new Set() }
     existing.count += 1
+    existing.cohortKinds.add(plane.cohortKind || 'business')
     grouped.set(modelLabel, existing)
   }
 
   return Array.from(grouped.values())
     .sort((left, right) => right.count - left.count || left.modelLabel.localeCompare(right.modelLabel))
     .map((entry, index, entries) => {
-      const total = aircraft.length || 1
+      const total = modelAircraft.length || 1
       return {
         ...entry,
+        cohortKinds: Array.from(entry.cohortKinds),
+        hasMilitary: entry.cohortKinds.has('military'),
         rank: index + 1,
         share: entry.count / total,
         totalModels: entries.length,
@@ -1281,6 +1371,392 @@ function normalizeDashboardArchive(archive) {
   )
 }
 
+function canonicalSampledAt(value) {
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) {
+    return null
+  }
+
+  return new Date(Math.round(timestamp / (30 * 60 * 1000)) * 30 * 60 * 1000).toISOString()
+}
+
+function buildClientSignalCalibration(records) {
+  const residuals = []
+  const positiveResiduals = []
+  const baselineStdDevs = []
+
+  for (const record of records) {
+    const residual = Number(record.concurrentCount || 0) - Number(record.predictedConcurrentCount || 0)
+    const baselineStdDev = Number(record.predictedConcurrentStdDev || 0)
+
+    if (Number.isFinite(residual)) {
+      residuals.push(residual)
+      if (residual > 0) {
+        positiveResiduals.push(residual)
+      }
+    }
+
+    if (Number.isFinite(baselineStdDev) && baselineStdDev > 0) {
+      baselineStdDevs.push(baselineStdDev)
+    }
+  }
+
+  const stdDevFloor =
+    median(residuals.map((residual) => Math.abs(residual)).filter((residual) => residual > 0)) ??
+    median(baselineStdDevs) ??
+    0
+  const positiveExcessScale = median(positiveResiduals) ?? stdDevFloor
+
+  return {
+    stdDevFloor,
+    positiveExcessScale,
+  }
+}
+
+function computeClientSignal(currentValue, baselineMean, baselineStdDev, alarmSigmaThreshold, signalCalibration = null) {
+  const divergence = Number(currentValue || 0) - Number(baselineMean || 0)
+  const effectiveBaselineStdDev = Math.max(
+    Number(baselineStdDev || 0),
+    Number(signalCalibration?.stdDevFloor || 0),
+  )
+
+  if (!effectiveBaselineStdDev) {
+    return {
+      divergence,
+      sigmaShift: 0,
+      rawSigmaShift: 0,
+      varianceAdjustedSigmaShift: 0,
+      effectiveBaselineStdDev: 0,
+      absoluteExcessWeight: 1,
+      emergencyLevel: 1,
+    }
+  }
+
+  const rawSigmaShift = baselineStdDev ? divergence / baselineStdDev : 0
+  const varianceAdjustedSigmaShift = divergence / effectiveBaselineStdDev
+  const positiveExcessScale = Number(signalCalibration?.positiveExcessScale || 0)
+  const absoluteExcessWeight =
+    divergence > 0 && positiveExcessScale > 0
+      ? divergence / (divergence + positiveExcessScale)
+      : 1
+  const sigmaShift =
+    varianceAdjustedSigmaShift > 0
+      ? varianceAdjustedSigmaShift * absoluteExcessWeight
+      : varianceAdjustedSigmaShift
+  const emergencyLevel = Math.min(
+    EMERGENCY_LEVEL_COUNT,
+    Math.max(1, Math.floor((Math.max(0, sigmaShift) / Math.max(1, alarmSigmaThreshold || 0)) * 4) + 1),
+  )
+
+  return {
+    divergence,
+    sigmaShift,
+    rawSigmaShift,
+    varianceAdjustedSigmaShift,
+    effectiveBaselineStdDev,
+    absoluteExcessWeight,
+    emergencyLevel,
+  }
+}
+
+function calibrateClientAlarmThreshold(records) {
+  if (!records.length) {
+    return DEFAULT_ALARM_SIGMA_THRESHOLD
+  }
+
+  const latestTimestamp = Date.parse(records[records.length - 1].sampledAt)
+  const lowerBound = latestTimestamp - 365 * ARCHIVE_DAY_MS
+  const dailyPeaks = new Map()
+
+  for (const record of records) {
+    const sampledAtMs = Date.parse(record.sampledAt)
+    if (!Number.isFinite(sampledAtMs) || sampledAtMs < lowerBound) {
+      continue
+    }
+
+    const day = record.sampledAt.slice(0, 10)
+    dailyPeaks.set(day, Math.max(dailyPeaks.get(day) ?? -Infinity, Number(record.sigmaShift || 0)))
+  }
+
+  const sortedPeaks = Array.from(dailyPeaks.values()).sort((left, right) => right - left)
+  if (!sortedPeaks.length) {
+    return DEFAULT_ALARM_SIGMA_THRESHOLD
+  }
+
+  if (sortedPeaks.length === 1) {
+    return Math.max(MIN_ALARM_SIGMA_THRESHOLD, Math.ceil(sortedPeaks[0] * 10) / 10)
+  }
+
+  return Math.max(MIN_ALARM_SIGMA_THRESHOLD, Math.ceil((sortedPeaks[1] + 0.05) * 10) / 10)
+}
+
+function buildCombinedArchive(dashboards) {
+  const archiveMaps = dashboards
+    .map((dashboard) => {
+      const archive = normalizeDashboardArchive(dashboard?.trends?.archive ?? [])
+      return new Map(
+        archive
+          .map((sample) => {
+            const sampledAt = canonicalSampledAt(sample.sampledAt)
+            return sampledAt ? [sampledAt, { ...sample, sampledAt }] : null
+          })
+          .filter(Boolean),
+      )
+    })
+    .filter((archiveMap) => archiveMap.size > 0)
+
+  if (archiveMaps.length !== dashboards.length || !archiveMaps.length) {
+    return []
+  }
+
+  const sampledAtKeys = Array.from(archiveMaps[0].keys())
+    .filter((sampledAt) => archiveMaps.every((archiveMap) => archiveMap.has(sampledAt)))
+    .sort((left, right) => Date.parse(left) - Date.parse(right))
+
+  const provisionalRecords = sampledAtKeys.map((sampledAt) => {
+    const samples = archiveMaps.map((archiveMap) => archiveMap.get(sampledAt))
+    const concurrentCount = samples.reduce((total, sample) => total + Number(sample.concurrentCount || 0), 0)
+    const predictedConcurrentCount = samples.reduce(
+      (total, sample) => total + Number(sample.predictedConcurrentCount || 0),
+      0,
+    )
+    const predictedConcurrentStdDev = Math.sqrt(
+      samples.reduce((total, sample) => total + Number(sample.predictedConcurrentStdDev || 0) ** 2, 0),
+    )
+
+    return {
+      sampledAt,
+      concurrentCount,
+      predictedConcurrentCount,
+      predictedConcurrentStdDev,
+    }
+  })
+
+  const signalCalibration = buildClientSignalCalibration(provisionalRecords)
+  const scoredForCalibration = provisionalRecords.map((record) => ({
+    ...record,
+    ...computeClientSignal(
+      record.concurrentCount,
+      record.predictedConcurrentCount,
+      record.predictedConcurrentStdDev,
+      DEFAULT_ALARM_SIGMA_THRESHOLD,
+      signalCalibration,
+    ),
+  }))
+  const alarmSigmaThreshold = calibrateClientAlarmThreshold(scoredForCalibration)
+
+  return provisionalRecords.map((record) => {
+    const signal = computeClientSignal(
+      record.concurrentCount,
+      record.predictedConcurrentCount,
+      record.predictedConcurrentStdDev,
+      alarmSigmaThreshold,
+      signalCalibration,
+    )
+
+    return {
+      ...record,
+      divergence: signal.divergence,
+      sigmaShift: signal.sigmaShift,
+      rawSigmaShift: signal.rawSigmaShift,
+      varianceAdjustedSigmaShift: signal.varianceAdjustedSigmaShift,
+      effectiveBaselineStdDev: signal.effectiveBaselineStdDev,
+      absoluteExcessWeight: signal.absoluteExcessWeight,
+      emergencyLevel: signal.emergencyLevel,
+      alarmSigmaThreshold,
+      signalStdDevFloor: signalCalibration.stdDevFloor,
+      signalPositiveExcessScale: signalCalibration.positiveExcessScale,
+    }
+  })
+}
+
+function withAircraftCohortKind(aircraft, cohortKind) {
+  return (aircraft || []).map((plane, index) => ({
+    ...plane,
+    cohortKind,
+    markerId: `${cohortKind}:${plane.hex || plane.registration || plane.label || index}`,
+  }))
+}
+
+function getSelectedDashboardEntries(primaryDashboard, selectedCohorts, extraDashboards, primaryKind = 'business') {
+  if (!primaryDashboard) {
+    return []
+  }
+
+  const entries = []
+  if (selectedCohorts[primaryKind] !== false) {
+    entries.push({ kind: primaryKind, dashboard: primaryDashboard })
+  }
+
+  for (const kind of ['military', 'untracked']) {
+    if (selectedCohorts[kind] && extraDashboards[kind]) {
+      entries.push({ kind, dashboard: extraDashboards[kind] })
+    }
+  }
+
+  return entries
+}
+
+function mergeHolidayWindows(dashboards) {
+  const windowsByKey = new Map()
+
+  for (const dashboard of dashboards) {
+    for (const window of dashboard?.trends?.holidayWindows ?? []) {
+      const keyParts = [
+        window.id,
+        window.holidayDateKey,
+        window.startsAt,
+        window.endsAt,
+      ].filter(Boolean)
+      if (!keyParts.length) {
+        continue
+      }
+
+      const key = keyParts.join('|')
+      if (!windowsByKey.has(key)) {
+        windowsByKey.set(key, window)
+      }
+    }
+  }
+
+  return Array.from(windowsByKey.values()).sort(
+    (left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt),
+  )
+}
+
+function buildCombinedDashboardView(primaryDashboard, selectedCohorts, extraDashboards, primaryKind = 'business') {
+  const selectedEntries = getSelectedDashboardEntries(primaryDashboard, selectedCohorts, extraDashboards, primaryKind)
+  if (!selectedEntries.length) {
+    return primaryDashboard
+  }
+
+  const selectedDashboards = selectedEntries.map((entry) => entry.dashboard)
+  const holidayWindows = mergeHolidayWindows(selectedDashboards)
+  const liveAircraft = selectedEntries.flatMap((entry) =>
+    withAircraftCohortKind(entry.dashboard.liveAircraft, entry.kind),
+  )
+
+  if (selectedEntries.length === 1) {
+    const [{ kind, dashboard }] = selectedEntries
+    return {
+      ...dashboard,
+      liveAircraft,
+      trends: {
+        ...dashboard.trends,
+        holidayWindows,
+      },
+      selectedCohorts: { [kind]: true },
+      combinedCohortKinds: [kind],
+    }
+  }
+
+  const combinedArchive = buildCombinedArchive(selectedDashboards)
+  const latestArchiveSample = combinedArchive[combinedArchive.length - 1]
+  const selectedCurrentCounts = selectedDashboards.map((dashboard) => Number(dashboard.current?.concurrentCount))
+  const actualConcurrentCount = selectedCurrentCounts.some((count) => Number.isFinite(count))
+    ? selectedCurrentCounts.reduce((sum, count) => sum + (Number.isFinite(count) ? count : 0), 0)
+    : latestArchiveSample?.concurrentCount ?? 0
+  const expectedConcurrentCount = selectedDashboards.reduce(
+    (sum, dashboard) => sum + Number(dashboard.current?.baselineMean || dashboard.signals?.composite?.expectedConcurrentCount || 0),
+    0,
+  ) || latestArchiveSample?.predictedConcurrentCount || 0
+  const expectedConcurrentStdDev = Math.sqrt(
+    selectedDashboards.reduce(
+      (sum, dashboard) => sum + Number(dashboard.current?.baselineStdDev || dashboard.signals?.composite?.expectedConcurrentStdDev || 0) ** 2,
+      0,
+    ),
+  ) || latestArchiveSample?.predictedConcurrentStdDev || 0
+  const signalStdDevFloor = latestArchiveSample?.signalStdDevFloor
+  const signalPositiveExcessScale = latestArchiveSample?.signalPositiveExcessScale
+  const alarmSigmaThreshold = latestArchiveSample?.alarmSigmaThreshold ?? Math.max(
+    MIN_ALARM_SIGMA_THRESHOLD,
+    ...selectedDashboards.map((dashboard) => Number(dashboard.current?.alarmSigmaThreshold || 0)),
+  )
+  const currentSignal = computeClientSignal(
+    actualConcurrentCount,
+    expectedConcurrentCount,
+    expectedConcurrentStdDev,
+    alarmSigmaThreshold,
+    {
+      stdDevFloor: signalStdDevFloor ?? 0,
+      positiveExcessScale: signalPositiveExcessScale ?? 0,
+    },
+  )
+  const trackedCounts = selectedDashboards.map((dashboard) => Number(dashboard.cohort?.trackedCount))
+  const hasUnboundedCohort = selectedEntries.some((entry) => entry.kind === 'untracked')
+  const trackedCount =
+    hasUnboundedCohort || trackedCounts.some((count) => !Number.isFinite(count))
+      ? null
+      : trackedCounts.reduce((sum, count) => sum + count, 0)
+  const latestSampledAt =
+    latestArchiveSample?.sampledAt ??
+    selectedDashboards
+      .map((dashboard) => dashboard.current?.asOf)
+      .filter(Boolean)
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ??
+    primaryDashboard.current?.asOf
+
+  return {
+    ...primaryDashboard,
+    cohort: {
+      ...primaryDashboard.cohort,
+      trackedCount,
+      source: 'combined_selected_aircraft',
+      sourceLabel: 'Selected aircraft categories',
+      cohortType: 'combined',
+    },
+    liveStatus: {
+      ...primaryDashboard.liveStatus,
+      latestSampledAt,
+      concurrentCount: actualConcurrentCount,
+    },
+    current: {
+      ...primaryDashboard.current,
+      asOf: latestSampledAt,
+      concurrentCount: actualConcurrentCount,
+      baselineMean: expectedConcurrentCount,
+      baselineStdDev: expectedConcurrentStdDev,
+      effectiveBaselineStdDev: currentSignal.effectiveConcurrentStdDev ?? currentSignal.effectiveBaselineStdDev,
+      zScore: currentSignal.sigmaShift,
+      rawZScore: currentSignal.rawSigmaShift,
+      varianceAdjustedZScore: currentSignal.varianceAdjustedSigmaShift,
+      absoluteExcessWeight: currentSignal.absoluteExcessWeight,
+      emergencyLevel: currentSignal.emergencyLevel,
+      alarmSigmaThreshold,
+      elevatedSigmaThreshold: Math.max(1.5, alarmSigmaThreshold / 2),
+    },
+    signals: {
+      ...primaryDashboard.signals,
+      composite: {
+        ...primaryDashboard.signals?.composite,
+        asOf: latestSampledAt,
+        actualConcurrentCount,
+        expectedConcurrentCount,
+        expectedConcurrentStdDev,
+        effectiveConcurrentStdDev: currentSignal.effectiveConcurrentStdDev ?? currentSignal.effectiveBaselineStdDev,
+        rawSigmaShift: currentSignal.rawSigmaShift,
+        varianceAdjustedSigmaShift: currentSignal.varianceAdjustedSigmaShift,
+        absoluteExcessWeight: currentSignal.absoluteExcessWeight,
+        signalStdDevFloor,
+        signalPositiveExcessScale,
+        sigmaShift: currentSignal.sigmaShift,
+        emergencyLevel: currentSignal.emergencyLevel,
+        alarmSigmaThreshold,
+        elevatedSigmaThreshold: Math.max(1.5, alarmSigmaThreshold / 2),
+        concurrentPredictionModel: CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
+      },
+    },
+    liveAircraft,
+    trends: {
+      ...primaryDashboard.trends,
+      archive: combinedArchive,
+      holidayWindows,
+    },
+    selectedCohorts,
+    combinedCohortKinds: selectedEntries.map((entry) => entry.kind),
+  }
+}
+
 function createWorldProjection() {
   return geoEqualEarth().fitExtent(
     [
@@ -1364,15 +1840,15 @@ function EmergencySummary({
   )
 }
 
-function ArchiveChart({ data, signal, holidayWindows = [] }) {
+function ArchiveChart({ data, signal, holidayWindows = [], cohortControls = null }) {
   const archiveData = useMemo(() => normalizeDashboardArchive(data), [data])
   return (
     <ArchiveChartPanel
-      key={`archive-${archiveData.length}`}
       data={archiveData}
       signal={signal}
       holidayWindows={holidayWindows}
       defaultWindowDays={3}
+      cohortControls={cohortControls}
     />
   )
 }
@@ -1396,7 +1872,7 @@ function snapArchiveEndDaysAgo(value, snapDays, maxEndDaysAgo) {
   return clamp(snappedEndDaysAgo, 0, maxAlignedEndDaysAgo)
 }
 
-function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) {
+function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays, cohortControls = null }) {
   const hasData = data.length > 0
   const sampledAtTimestamps = useMemo(() => data.map((sample) => Date.parse(sample.sampledAt || 0)), [data])
   const latestTimestamp = sampledAtTimestamps[sampledAtTimestamps.length - 1] || 0
@@ -1419,7 +1895,7 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) 
   const primaryLineWidth = isDenseWindow ? 1.45 : 2.5
   const secondaryLineWidth = isDenseWindow ? 1.15 : 2
   const referenceLineWidth = isDenseWindow ? 0.75 : 1
-  const showWeeklyBaselineBand = PREDICTION_BAND_MODELS.has(signal?.concurrentPredictionModel)
+  const signalUsesPredictionBandModel = PREDICTION_BAND_MODELS.has(signal?.concurrentPredictionModel)
 
   function setArchiveWindowDays(nextWindowDays) {
     const nextWindowDaysClamped = clamp(nextWindowDays, 1, maxDaysAvailable)
@@ -1466,6 +1942,9 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) 
       return Number.isFinite(startsAt) && Number.isFinite(endsAt) && endsAt >= visibleStartMs && startsAt <= visibleEndMs
     })
   }, [holidayWindows, visibleEnd, visibleStart])
+  const showPredictionStdDevBand =
+    signalUsesPredictionBandModel ||
+    visibleData.some((sample) => Number.isFinite(sample.predictedConcurrentStdDev) && sample.predictedConcurrentStdDev > 0)
   const emergencyLevelReferenceLines = buildEmergencyLevelReferenceLines(referenceLineWidth)
   const getSampleEmergencyLevel = (sample) => getContinuousEmergencyLevel(sample.sigmaShift, signal?.alarmSigmaThreshold)
 
@@ -1553,16 +2032,43 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) 
             <span>1 month</span>
           </label>
         </fieldset>
+        {cohortControls ? (
+          <fieldset className="chart-checkbox-group cohort-toggle-group">
+            <legend className="sr-only">Aircraft categories</legend>
+            {cohortControls.options.map((option) => {
+              const loading = cohortControls.loading?.[option.id]
+              const error = cohortControls.errors?.[option.id]
+              const checked = Boolean(cohortControls.selected?.[option.id])
+
+              return (
+                <label
+                  key={option.id}
+                  className={`chart-checkbox-option cohort-toggle-option${checked ? ' cohort-toggle-option-active' : ''}${loading ? ' cohort-toggle-option-loading' : ''}${error ? ' cohort-toggle-option-error' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => cohortControls.onToggle(option.id)}
+                  />
+                  <span>{option.label}</span>
+                  {loading ? <span className="cohort-toggle-status">loading</span> : null}
+                  {error ? <span className="cohort-toggle-status">error</span> : null}
+                </label>
+              )
+            })}
+          </fieldset>
+        ) : null}
       </div>
       <div className="chart-frame">
         <ArchiveSvgChart
           data={visibleData}
           height={ARCHIVE_CHART_HEIGHT}
           windowDays={visibleWindowDays}
+          yDomainMin={0}
           regions={visibleHolidayWindows}
           hoverIndex={visibleHoverIndex}
           onHoverIndexChange={setSharedHoverIndex}
-          bands={showWeeklyBaselineBand ? [
+          bands={showPredictionStdDevBand ? [
             {
               name: 'Prediction standard deviation',
               lowerAccessor: (sample) => sample.predictedConcurrentCount - sample.predictedConcurrentStdDev,
@@ -1582,7 +2088,7 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) 
               accessor: (sample) => sample.predictedConcurrentCount,
               stroke: isLongWindow ? CHART_LONG_WINDOW_SECONDARY_COLOR : CHART_SECONDARY_COLOR,
               strokeWidth: secondaryLineWidth,
-              strokeDasharray: isLongWindow ? undefined : '7 6',
+              strokeDasharray: showPredictionStdDevBand || isLongWindow ? undefined : '7 6',
             },
           ]}
           tooltipFormatter={(sample) => (
@@ -1590,7 +2096,7 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) 
               <strong>{formatTimestamp(sample.sampledAt, { weekday: true })}</strong>
               <span>Observed: {formatCount(sample.concurrentCount)}</span>
               <span>Predicted: {formatCount(sample.predictedConcurrentCount)}</span>
-              {showWeeklyBaselineBand && Number.isFinite(sample.predictedConcurrentStdDev) ? (
+              {showPredictionStdDevBand && Number.isFinite(sample.predictedConcurrentStdDev) ? (
                 <span>Std dev: +/- {formatCount(sample.predictedConcurrentStdDev)}</span>
               ) : null}
             </>
@@ -1607,6 +2113,7 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays }) 
             data={visibleData}
             height={ARCHIVE_DIVERGENCE_HEIGHT}
             windowDays={visibleWindowDays}
+            regions={visibleHolidayWindows}
             hoverIndex={visibleHoverIndex}
             onHoverIndexChange={setSharedHoverIndex}
             yAxisTicks={emergencyLevelReferenceLines.map((line) => ({
@@ -1658,6 +2165,7 @@ const MapBaseLayer = memo(function MapBaseLayer({ geographyPaths, graticulePath,
 
 const MapMarkerLayer = memo(function MapMarkerLayer({
   isNarrowLayout,
+  markerCounterScale,
   markerHaloRadius,
   markerHitRadius,
   markerIconScale,
@@ -1665,25 +2173,23 @@ const MapMarkerLayer = memo(function MapMarkerLayer({
   onMarkerActivate,
   onMarkerHoverEnd,
   onMarkerHoverStart,
-  selectedPlaneHex,
+  selectedMarkerId,
 }) {
   return markers.map((marker) => (
     <g
-      key={marker.hex}
-      data-plane-hex={marker.hex}
-      className={`map-marker${marker.hex === selectedPlaneHex ? ' map-marker-active' : ''}${isNarrowLayout ? ' map-marker-touch' : ''}`}
+      key={marker.id}
+      data-marker-id={marker.id}
+      className={`map-marker map-marker-${marker.cohortKind || 'business'}${marker.id === selectedMarkerId ? ' map-marker-active' : ''}${isNarrowLayout ? ' map-marker-touch' : ''}`}
       transform={`translate(${marker.x} ${marker.y})`}
-      onMouseEnter={isNarrowLayout ? undefined : () => onMarkerHoverStart(marker.hex)}
-      onMouseLeave={isNarrowLayout ? undefined : () => onMarkerHoverEnd(marker.hex)}
-      onFocus={() => onMarkerHoverStart(marker.hex)}
-      onBlur={() => onMarkerHoverEnd(marker.hex)}
+      onFocus={() => onMarkerHoverStart(marker.id)}
+      onBlur={() => onMarkerHoverEnd(marker.id)}
       onClick={(event) => {
         if (isNarrowLayout) {
           return
         }
 
         event.stopPropagation()
-        onMarkerActivate(marker.hex)
+        onMarkerActivate(marker.id)
       }}
       onPointerDown={(event) => {
         clearCurrentTextSelection()
@@ -1698,30 +2204,48 @@ const MapMarkerLayer = memo(function MapMarkerLayer({
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
-          onMarkerActivate(marker.hex)
+          onMarkerActivate(marker.id)
         }
       }}
       tabIndex={0}
       role="button"
-      aria-pressed={marker.hex === selectedPlaneHex}
+      aria-pressed={marker.id === selectedMarkerId}
       aria-label={marker.ariaLabel}
     >
-      <g className="map-marker-visual">
+      <g className="map-marker-visual" transform={`scale(${markerCounterScale})`}>
         <circle r={markerHitRadius} className="map-marker-hit" />
         <circle r={markerHaloRadius} className="map-marker-halo" />
-        <g transform={`rotate(${marker.rotation}) scale(${markerIconScale})`}>
-          <path d={AIRCRAFT_MARKER_PATH} className="map-marker-plane" />
-        </g>
+        {marker.shape === 'circle' ? (
+          <circle r={markerIconScale * 4.4} className="map-marker-circle" />
+        ) : (
+          <g transform={`rotate(${marker.rotation}) scale(${markerIconScale})`}>
+            <path d={AIRCRAFT_MARKER_PATH} className="map-marker-plane" />
+          </g>
+        )}
         <title>{marker.title}</title>
       </g>
     </g>
   ))
 })
 
+function hasValidMapPosition(plane) {
+  const lat = Number(plane?.lat)
+  const lon = Number(plane?.lon)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return false
+  }
+
+  if (plane?.cohortKind === 'untracked' && lon === 0) {
+    return false
+  }
+
+  return true
+}
+
 function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   const isNarrowLayout = useIsNarrowLayout()
-  const [selectedPlaneHex, setSelectedPlaneHex] = useState(null)
-  const [hoveredPlaneHex, setHoveredPlaneHex] = useState(null)
+  const [selectedMarkerId, setSelectedMarkerId] = useState(null)
+  const [hoveredMarkerId, setHoveredMarkerId] = useState(null)
   const [mapTransform, setMapTransform] = useState(() => constrainMapTransform({
     scale: 1,
     translateX: 0,
@@ -1746,6 +2270,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   const projectedAircraft = useMemo(
     () =>
       aircraft
+        .filter(hasValidMapPosition)
         .map((plane) => {
           const point = projection([plane.lon, plane.lat])
           if (!point || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
@@ -1753,7 +2278,10 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
           }
 
           return {
+            id: plane.markerId || plane.hex,
             hex: plane.hex,
+            cohortKind: plane.cohortKind || 'business',
+            shape: plane.cohortKind === 'untracked' ? 'circle' : 'airplane',
             x: point[0],
             y: point[1],
             rotation: getProjectedAircraftRotation(plane, projection) ?? 0,
@@ -1764,27 +2292,27 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
         .filter(Boolean),
     [aircraft, projection],
   )
-  const displayedPlaneHex = hoveredPlaneHex || selectedPlaneHex
+  const displayedMarkerId = hoveredMarkerId || selectedMarkerId
   const displayedPlane = useMemo(
-    () => aircraft.find((plane) => plane.hex === displayedPlaneHex) ?? null,
-    [displayedPlaneHex, aircraft],
+    () => aircraft.find((plane) => (plane.markerId || plane.hex) === displayedMarkerId) ?? null,
+    [displayedMarkerId, aircraft],
   )
   const markerHaloRadius = isNarrowLayout ? 18 : 12
   const markerHitRadius = isNarrowLayout ? 30 : 16
   const markerIconScale = isNarrowLayout ? 1.65 : 1
   const mapTransformValue = `matrix(${mapTransform.scale} 0 0 ${mapTransform.scale} ${mapTransform.translateX} ${mapTransform.translateY})`
-  const markerCounterScale = String(1 / mapTransform.scale)
+  const markerCounterScale = 1 / mapTransform.scale
 
-  const selectPlane = useCallback((planeHex) => {
-    setSelectedPlaneHex(planeHex)
+  const selectPlane = useCallback((markerId) => {
+    setSelectedMarkerId(markerId)
   }, [])
 
-  const showPlane = useCallback((planeHex) => {
-    setHoveredPlaneHex(planeHex)
+  const showPlane = useCallback((markerId) => {
+    setHoveredMarkerId((currentMarkerId) => (currentMarkerId === markerId ? currentMarkerId : markerId))
   }, [])
 
-  const hidePlane = useCallback((planeHex) => {
-    setHoveredPlaneHex((currentHex) => (currentHex === planeHex ? null : currentHex))
+  const hidePlane = useCallback((markerId) => {
+    setHoveredMarkerId((currentMarkerId) => (currentMarkerId === markerId ? null : currentMarkerId))
   }, [])
 
   function getSvgPoint(event) {
@@ -1798,6 +2326,41 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
     point.x = event.clientX
     point.y = event.clientY
     return point.matrixTransform(screenMatrix.inverse())
+  }
+
+  function getNearestMarkerId(point) {
+    if (!point || !projectedAircraft.length) {
+      return null
+    }
+
+    const maxDistanceSq = markerHitRadius ** 2
+    let nearestMarkerId = null
+    let nearestDistanceSq = maxDistanceSq
+
+    for (const marker of projectedAircraft) {
+      const viewportX = mapTransform.scale * marker.x + mapTransform.translateX
+      const viewportY = mapTransform.scale * marker.y + mapTransform.translateY
+      const distanceSq = (point.x - viewportX) ** 2 + (point.y - viewportY) ** 2
+
+      if (distanceSq <= nearestDistanceSq) {
+        nearestDistanceSq = distanceSq
+        nearestMarkerId = marker.id
+      }
+    }
+
+    return nearestMarkerId
+  }
+
+  function updateHoveredMarkerFromEvent(event) {
+    if (isNarrowLayout) {
+      return
+    }
+
+    const point = getSvgPoint(event)
+    const nearestMarkerId = getNearestMarkerId(point)
+    setHoveredMarkerId((currentMarkerId) => (
+      currentMarkerId === nearestMarkerId ? currentMarkerId : nearestMarkerId
+    ))
   }
 
   function getVisibleAircraftCentroid() {
@@ -1887,7 +2450,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
       lastX: point.x,
       lastY: point.y,
       moved: false,
-      markerHex: markerElement?.dataset?.planeHex || null,
+      markerId: markerElement?.dataset?.markerId || null,
     }
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
@@ -1895,6 +2458,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   function handleMapPointerMove(event) {
     const panState = panStateRef.current
     if (!panState || panState.pointerId !== event.pointerId) {
+      updateHoveredMarkerFromEvent(event)
       return
     }
 
@@ -1928,8 +2492,8 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
     panStateRef.current = null
     clearCurrentTextSelection()
 
-    if (!panState.moved && panState.markerHex) {
-      selectPlane(panState.markerHex)
+    if (!panState.moved && panState.markerId) {
+      selectPlane(panState.markerId)
     }
   }
 
@@ -1942,6 +2506,14 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
     event.currentTarget.releasePointerCapture?.(event.pointerId)
     panStateRef.current = null
     clearCurrentTextSelection()
+  }
+
+  function handleMapPointerLeave() {
+    if (panStateRef.current) {
+      return
+    }
+
+    setHoveredMarkerId(null)
   }
 
   return (
@@ -2008,8 +2580,9 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
           onPointerMove={handleMapPointerMove}
           onPointerUp={handleMapPointerUp}
           onPointerCancel={handleMapPointerCancel}
+          onPointerLeave={handleMapPointerLeave}
         >
-          <g className="map-viewport" transform={mapTransformValue} style={{ '--map-marker-scale': markerCounterScale }}>
+          <g className="map-viewport" transform={mapTransformValue}>
             <MapBaseLayer
               geographyPaths={geographyPaths}
               graticulePath={graticulePath}
@@ -2017,6 +2590,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
             />
             <MapMarkerLayer
               isNarrowLayout={isNarrowLayout}
+              markerCounterScale={markerCounterScale}
               markerHaloRadius={markerHaloRadius}
               markerHitRadius={markerHitRadius}
               markerIconScale={markerIconScale}
@@ -2024,7 +2598,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
               onMarkerActivate={selectPlane}
               onMarkerHoverEnd={hidePlane}
               onMarkerHoverStart={showPlane}
-              selectedPlaneHex={selectedPlaneHex}
+              selectedMarkerId={selectedMarkerId}
             />
           </g>
         </svg>
@@ -2053,6 +2627,19 @@ function AirplaneIcon({ className }) {
   )
 }
 
+function MilitaryIcon({ className = 'model-military-icon' }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="5.2" />
+      <circle cx="8" cy="8" r="0.7" />
+      <path d="M8 1.1v2" />
+      <path d="M8 12.9v2" />
+      <path d="M1.1 8h2" />
+      <path d="M12.9 8h2" />
+    </svg>
+  )
+}
+
 function PersonIcon({ className = 'model-person-icon' }) {
   return (
     <svg className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -2076,7 +2663,7 @@ function ModelSummaryList({ aircraft, copy }) {
         <ul className="flight-list model-list">
           {modelSummary.map((entry) => {
             const wikipediaUrl =
-              showPassengerDetails && entry.rank <= AIRCRAFT_MODEL_DETAIL_RANK_LIMIT
+              entry.rank <= AIRCRAFT_MODEL_DETAIL_RANK_LIMIT
                 ? getAircraftModelWikipediaUrl(entry.modelLabel)
                 : null
             const maxPassengers =
@@ -2102,6 +2689,15 @@ function ModelSummaryList({ aircraft, copy }) {
                     ) : (
                       <strong>{entry.modelLabel}</strong>
                     )}
+                    {entry.hasMilitary ? (
+                      <span
+                        className="model-military-label"
+                        title="Military aircraft"
+                        aria-label="Military aircraft"
+                      >
+                        <MilitaryIcon />
+                      </span>
+                    ) : null}
                     {maxPassengers ? (
                       <span
                         className="model-passenger-label"
@@ -2140,41 +2736,39 @@ function AboutSystemCard({ cohort, copy }) {
       <div className="about-copy">
         <p>
           This site watches {copy.trackedDescription} and asks a simple question: is the number currently airborne
-          unusual for this time? {cohortKind === 'untracked' ? 'It is tracking all visible non-ICAO addresses, not all aircraft.' : 'It is not tracking all aircraft.'} The tracked set is built from{' '}
-          {cohortKind === 'military' ? (
-            <>
-              public global aircraft metadata, ADS-B Exchange lookups, and Mictronics/tar1090 records
-            </>
-          ) : cohortKind === 'untracked' ? (
-            <>
-              ADS-B Exchange heatmaps by selecting records with readsb non-ICAO <code>~hex</code> addresses
-            </>
-          ) : isGlobalCohort ? (
-            <>
-              public global aircraft metadata, ADS-B Exchange lookups, Mictronics/tar1090 records, and{' '}
-              <a
-                href="https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download"
-                target="_blank"
-                rel="noreferrer"
-              >
-                FAA registry data
-              </a>
-            </>
-          ) : (
-            <a
-              href="https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download"
-              target="_blank"
-              rel="noreferrer"
-            >
-              FAA registry data
-            </a>
-          )}{' '}
-          with {copy.filterDescription}.{' '}
+          unusual for this time? {cohortKind === 'untracked' ? 'It is tracking all visible non-ICAO addresses, not all aircraft.' : 'It is not tracking all aircraft.'}{' '}
           {cohortKind === 'untracked' ? (
-            <>Those addresses are tracked as observed, even when the underlying aircraft identity is unknown.</>
+            <>
+              The untracked mode does not use aircraft identity metadata. It scans ADS-B Exchange heatmaps for readsb
+              non-ICAO <code>~hex</code> addresses and tracks those addresses as observed, even when the underlying
+              aircraft identity is unknown.
+            </>
           ) : (
             <>
-              Each aircraft is matched by its{' '}
+              The original version used an FAA-only business-jet list. The current tracker builds a broader global
+              aircraft metadata table by merging{' '}
+              <a href="https://downloads.adsbexchange.com/downloads/basic-ac-db.json.gz" target="_blank" rel="noreferrer">
+                ADS-B Exchange aircraft records
+              </a>
+              ,{' '}
+              <a href="https://github.com/wiedehopf/tar1090-db" target="_blank" rel="noreferrer">
+                Mictronics/tar1090 records
+              </a>
+              {isGlobalCohort ? (
+                <>
+                  , and{' '}
+                  <a
+                    href="https://www.faa.gov/licenses_certificates/aircraft_certification/aircraft_registry/releasable_aircraft_download"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    FAA registry data
+                  </a>
+                </>
+              ) : null}{' '}
+              by ICAO hex. The importer classifies metadata into business jets, military aircraft, large airliners,
+              regional airliners, non-jet aircraft, and other known types, then applies {copy.filterDescription}. Each
+              tracked aircraft is matched in live data by its{' '}
               <a
                 href="https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_modes#ICAO_24-bit_address"
                 target="_blank"
@@ -2192,18 +2786,20 @@ function AboutSystemCard({ cohort, copy }) {
             ADS-B Exchange
           </a>{' '}
           heatmap files. Those files are published in half-hour slots and encode recent aircraft positions. The backend
-          downloads the newest available heatmap, parses it, {cohortKind === 'untracked' ? 'selects non-ICAO records' : 'matches the aircraft in the heatmap against the tracked cohort'}, and stores the latest position, altitude, speed, heading, and airborne state for each match.
+          downloads the newest available heatmap, parses it, {cohortKind === 'untracked' ? 'selects non-ICAO records' : 'matches the aircraft in the heatmap against the tracked cohort'}, and stores the latest position, altitude, speed, heading, and airborne state for each match. Military aircraft and non-ICAO addresses are published as separate dashboard snapshots and loaded only when their toggles are enabled.
         </p>
         <p>
           Historical context comes from the same heatmap format. The backfill job walks through previous half-hour slots,
           counts how many {copy.trackedNoun} were airborne, and records those counts in SQLite. The dashboard then compares
-          the current concurrent airborne count with a recent baseline for similar times of day and week.
+          the current concurrent airborne count with an all-history weekly baseline for the same half-hour of the week.
+          The model also learns local half-hour profiles around U.S. federal holidays, so predictable holiday travel is
+          included in the prediction instead of treated as a generic spike.
         </p>
         <p>
           The deviation number is the current count minus the expected count. The sigma value puts that difference on the
-          scale of recent model error, so a small positive count can matter more when the baseline is normally stable, and
-          a larger count can matter less when that time slot is usually noisy. The emergency level is a compact display of
-          that same standardized signal.
+          scale of historical model error and combines it with an absolute-excess weighting, so tiny overnight changes do
+          not dominate just because the usual count is low. When multiple aircraft categories are selected, their observed
+          counts, predictions, and variances are combined and the emergency level is recalibrated for the selected total.
         </p>
         {copy.showSeatEstimate ? (
           <p>
@@ -2245,16 +2841,19 @@ function FaqCard() {
           <h3>Is this trying to detect missiles that are already inbound?</h3>
           <p>
             No. The useful signal would be earlier behavior: people or institutions acting on information hours or days
-            before it becomes obvious publicly. Several Hacker News replies made this distinction; this is an anomaly
-            monitor, not a replacement for official emergency alerts.
+            before it becomes obvious publicly.
           </p>
         </article>
         <article>
-          <h3>Would flying actually be a good survival plan?</h3>
+          <h3>What counts as a business jet here?</h3>
           <p>
-            Probably not in many nuclear scenarios. Airports can be targets, travel to an airport can be slow, and shelter
-            may be safer than moving. The dashboard does not recommend flying; it only watches whether public flight
-            activity changes in a way that is unusual for the calendar and time of week.
+            For this app, business jets are a fixed aircraft cohort selected from public aircraft metadata by ICAO hex.
+            The filter looks for jet records whose manufacturer, model, or ICAO type matches common business-jet families
+            such as Citation, Gulfstream, Falcon, Global, Challenger, Learjet, Phenom, Praetor, HondaJet, PC-24, Hawker,
+            Beechjet, Eclipse, and Vision Jet. It excludes aircraft marked military and obvious airliners or regional
+            airliners such as Boeing 7xx, Airbus A3xx/A2xx, CRJ airline variants, ERJ/EMB regional jets, MD/DC aircraft,
+            and other large transport categories. It is a practical type-based cohort, not proof of private ownership,
+            passenger identity, or trip purpose.
           </p>
         </article>
         <article>
@@ -2274,30 +2873,26 @@ function FaqCard() {
           <h3>Why look at aircraft instead of news or prediction markets?</h3>
           <p>
             This should be read alongside other public signals. Prediction markets may react quickly to insider knowledge;
-            reporting about Iran-war bets described unusually well-timed wagers around military and oil-price events. This
-            model is designed to tolerate normal one- or two-day increases in activity, including holiday travel, so a
-            short surge has to be unusual relative to similar historical windows before it meaningfully moves the level.
+            <a
+              href="https://www.theguardian.com/world/2026/apr/18/iran-war-bets-ethics-concerns?utm_source=chatgpt.com"
+              target="_blank"
+              rel="noreferrer"
+            >
+              reporting about Iran-war bets
+            </a>{' '}
+            described unusually well-timed wagers around military and oil-price events. This model is designed to tolerate
+            normal one- or two-day increases in activity, including holiday travel, so a short surge has to be unusual
+            relative to similar historical windows before it meaningfully moves the level.
           </p>
         </article>
         <article>
           <h3>Does level 5 mean an apocalypse is likely?</h3>
           <p>
-            No. Level 5 means the current count is an extreme positive outlier under this model. It can still be caused by
+            Level 5 means the current count is an extreme positive outlier under this model. It can still be caused by
             holidays, major sporting or political events, data artifacts, or cohort mistakes. The archive is included so
             those historical false positives are visible.
           </p>
         </article>
-        <p className="faq-source-note">
-          Context: the public discussion on{' '}
-          <a href="https://news.ycombinator.com/item?id=47976566" target="_blank" rel="noreferrer">
-            Hacker News
-          </a>{' '}
-          and reporting from{' '}
-          <a href="https://www.theguardian.com/world/2026/apr/18/iran-war-bets-ethics-concerns" target="_blank" rel="noreferrer">
-            The Guardian
-          </a>
-          .
-        </p>
       </div>
     </section>
   )
@@ -2315,8 +2910,9 @@ function UpdatesCard({ copy }) {
           <p>
             The dashboard now uses the {copy.sourceShort} dataset, a dense-history weekly baseline, U.S. federal
             holiday half-hour profiles, and linked archive hover. The model is less dependent on a short recent window
-            and compensates around New Year&apos;s Day, MLK Day, Washington&apos;s Birthday, Memorial Day, Juneteenth,
-            Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, and Christmas.
+            and compensates around federal US holidays, which accounts for significant variation in global business jet
+            traffic. Military aircraft and non-ICAO untracked aircraft can also be toggled into the traffic and emergency
+            level plots, with the emergency level recalibrated for the selected combined total.
           </p>
           <p>
             The holiday correction learns each holiday&apos;s local time-of-day shape from older holiday-only backfills.
@@ -2515,12 +3111,21 @@ function SignupPage() {
   )
 }
 
-function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
+function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = false, primaryCohortKind = 'business' }) {
   const [dashboard, setDashboard] = useState(null)
   const [error, setError] = useState(null)
+  const [selectedCohorts, setSelectedCohorts] = useState(() => ({
+    business: true,
+    military: false,
+    untracked: false,
+  }))
+  const [extraDashboards, setExtraDashboards] = useState({})
+  const [extraDashboardErrors, setExtraDashboardErrors] = useState({})
+  const [loadingCohorts, setLoadingCohorts] = useState({})
   const [backgroundReady, setBackgroundReady] = useState(false)
   const [manualEmergencySchemeEnabled, setManualEmergencySchemeEnabled] = useState(false)
   const emergencySchemeTapTimesRef = useRef([])
+  const extraDashboardsRef = useRef({})
 
   const applyDashboard = useEffectEvent((nextDashboard) => {
     startTransition(() => {
@@ -2597,6 +3202,143 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
     }
   }, [dashboardUrl])
 
+  useEffect(() => {
+    extraDashboardsRef.current = extraDashboards
+  }, [extraDashboards])
+
+  useEffect(() => {
+    if (!enableCohortControls) {
+      return undefined
+    }
+
+    const selectedExtraConfigs = COHORT_CONFIGS.filter(
+      (config) => config.id !== primaryCohortKind && selectedCohorts[config.id],
+    )
+    if (!selectedExtraConfigs.length) {
+      return undefined
+    }
+
+    let active = true
+
+    async function loadExtraDashboard(config) {
+      let loadingTimerId = null
+      const hasCachedDashboard = Boolean(extraDashboardsRef.current[config.id])
+
+      if (!hasCachedDashboard) {
+        loadingTimerId = window.setTimeout(() => {
+          if (!active || extraDashboardsRef.current[config.id]) {
+            return
+          }
+
+          setLoadingCohorts((current) => ({ ...current, [config.id]: true }))
+        }, COHORT_LOADING_DELAY_MS)
+      }
+
+      try {
+        const response = await fetch(buildDashboardRequestUrl(config.dashboardUrl), {
+          cache: 'no-store',
+        })
+        if (!response.ok) {
+          throw new Error(`Dashboard request failed with ${response.status}`)
+        }
+
+        const nextDashboard = await response.json()
+        if (!active) {
+          return
+        }
+
+        startTransition(() => {
+          setExtraDashboards((current) => ({ ...current, [config.id]: nextDashboard }))
+          setExtraDashboardErrors((current) => ({ ...current, [config.id]: null }))
+        })
+      } catch (nextError) {
+        if (active) {
+          setExtraDashboardErrors((current) => ({ ...current, [config.id]: nextError.message }))
+        }
+      } finally {
+        if (loadingTimerId) {
+          window.clearTimeout(loadingTimerId)
+        }
+
+        if (active) {
+          setLoadingCohorts((current) =>
+            current[config.id] ? { ...current, [config.id]: false } : current,
+          )
+        }
+      }
+    }
+
+    function loadSelectedExtraDashboards() {
+      for (const config of selectedExtraConfigs) {
+        void loadExtraDashboard(config)
+      }
+    }
+
+    loadSelectedExtraDashboards()
+    const intervalId = window.setInterval(loadSelectedExtraDashboards, DASHBOARD_POLL_INTERVAL_MS)
+
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [
+    enableCohortControls,
+    primaryCohortKind,
+    selectedCohorts,
+  ])
+
+  const handleCohortToggle = useCallback((cohortId) => {
+    setSelectedCohorts((current) => {
+      const next = { ...current, [cohortId]: !current[cohortId] }
+      const hasAnySelected = Object.values(next).some(Boolean)
+      if (!hasAnySelected) {
+        return current
+      }
+
+      if (!next[primaryCohortKind]) {
+        const hasLoadedSelectedDashboard = Object.entries(next).some(([selectedCohortId, isSelected]) => {
+          if (!isSelected) {
+            return false
+          }
+
+          return selectedCohortId === primaryCohortKind || Boolean(extraDashboards[selectedCohortId])
+        })
+
+        if (!hasLoadedSelectedDashboard) {
+          return current
+        }
+      }
+
+      return next
+    })
+  }, [extraDashboards, primaryCohortKind])
+
+  const effectiveSelectedCohorts = useMemo(
+    () => (enableCohortControls ? selectedCohorts : { [primaryCohortKind]: true }),
+    [enableCohortControls, primaryCohortKind, selectedCohorts],
+  )
+  const visibleDashboard = useMemo(
+    () =>
+      dashboard
+        ? buildCombinedDashboardView(dashboard, effectiveSelectedCohorts, extraDashboards, primaryCohortKind)
+        : null,
+    [
+      dashboard,
+      effectiveSelectedCohorts,
+      extraDashboards,
+      primaryCohortKind,
+    ],
+  )
+  const cohortControls = enableCohortControls
+    ? {
+        options: COHORT_CONFIGS,
+        selected: selectedCohorts,
+        loading: loadingCohorts,
+        errors: extraDashboardErrors,
+        onToggle: handleCohortToggle,
+      }
+    : null
+
   const shouldShowLoading = !dashboard || !backgroundReady
 
   useEffect(() => {
@@ -2621,7 +3363,7 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
     }
   }, [dashboard, error, shouldShowLoading])
 
-  const currentSignal = dashboard?.signals?.composite ?? dashboard?.current ?? null
+  const currentSignal = visibleDashboard?.signals?.composite ?? visibleDashboard?.current ?? null
   const currentEmergencyLevel = getEmergencyLevel(currentSignal)
   const emergencySchemeActive = manualEmergencySchemeEnabled || currentEmergencyLevel === EMERGENCY_LEVEL_COUNT
 
@@ -2647,48 +3389,83 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
   } else if (shouldShowLoading) {
     content = document.getElementById('initial-loader') ? null : <LoadingAnimation />
   } else {
-    const archiveData = dashboard.trends?.archive ?? []
-    const holidayWindows = dashboard.trends?.holidayWindows ?? []
-    const liveAircraft = dashboard.liveAircraft ?? []
-    const liveStatus = dashboard.liveStatus ?? null
-    const cohortCopy = getCohortCopy(dashboard.cohort)
+    const archiveData = visibleDashboard.trends?.archive ?? []
+    const holidayWindows = visibleDashboard.trends?.holidayWindows ?? []
+    const liveAircraft = visibleDashboard.liveAircraft ?? []
+    const liveStatus = visibleDashboard.liveStatus ?? null
+    const cohortCopy = getCohortCopy(visibleDashboard.cohort)
     const adsbDataStatus = getAdsbDataUnavailableStatus(liveStatus)
-    const compositeSignal = dashboard.signals?.composite ?? {
-      asOf: dashboard.current?.asOf,
-      actualConcurrentCount: dashboard.current?.concurrentCount,
-      expectedConcurrentCount: dashboard.current?.baselineMean,
-      expectedConcurrentStdDev: dashboard.current?.baselineStdDev,
-      sigmaShift: dashboard.current?.zScore,
-      alertLevel: dashboard.current?.alertLevel,
-      emergencyLevel: dashboard.current?.emergencyLevel,
+    const compositeSignal = visibleDashboard.signals?.composite ?? {
+      asOf: visibleDashboard.current?.asOf,
+      actualConcurrentCount: visibleDashboard.current?.concurrentCount,
+      expectedConcurrentCount: visibleDashboard.current?.baselineMean,
+      expectedConcurrentStdDev: visibleDashboard.current?.baselineStdDev,
+      sigmaShift: visibleDashboard.current?.zScore,
+      alertLevel: visibleDashboard.current?.alertLevel,
+      emergencyLevel: visibleDashboard.current?.emergencyLevel,
     }
+    const seatEstimateAircraft =
+      cohortCopy.kind === 'combined'
+        ? liveAircraft.filter((plane) => plane.cohortKind === 'business')
+        : liveAircraft
+    const businessActualCount =
+      selectedCohorts.business
+        ? dashboard.signals?.composite?.actualConcurrentCount ?? dashboard.current?.concurrentCount
+        : null
     const maxSeatsAirborneEstimate = cohortCopy.showSeatEstimate
-      ? estimateMaxSeatsAirborne(liveAircraft, compositeSignal.actualConcurrentCount)
+      ? estimateMaxSeatsAirborne(
+          seatEstimateAircraft,
+          cohortCopy.kind === 'combined' ? businessActualCount : compositeSignal.actualConcurrentCount,
+        )
       : null
+    const loadingCohortLabels = enableCohortControls
+      ? COHORT_CONFIGS
+          .filter((config) => selectedCohorts[config.id] && loadingCohorts[config.id] && !extraDashboards[config.id])
+          .map((config) => config.label)
+      : []
+    const erroredCohortLabels = enableCohortControls
+      ? COHORT_CONFIGS
+          .filter((config) => selectedCohorts[config.id] && extraDashboardErrors[config.id])
+          .map((config) => config.label)
+      : []
 
     content = (
       <main className="app-shell">
-        {dashboard.warning ? (
+        {visibleDashboard.warning ? (
           <section className="status-banner">
-            <strong>{dashboard.mode === 'demo' ? 'Demo mode.' : 'Configuration required.'}</strong>
-            <span>{dashboard.warning}</span>
+            <strong>{visibleDashboard.mode === 'demo' ? 'Demo mode.' : 'Configuration required.'}</strong>
+            <span>{visibleDashboard.warning}</span>
           </section>
         ) : null}
 
-        {!dashboard.warning && !liveStatus?.latestSampledAt ? (
+        {!visibleDashboard.warning && !liveStatus?.latestSampledAt ? (
           <section className="status-banner">
             <strong>No recent sweep.</strong>
             <span>The backend polls the newest heatmap every 30 minutes and serves the latest cached sample.</span>
           </section>
         ) : null}
 
-        {liveStatus?.lastError ? (
+        {adsbDataStatus.isUnavailable && liveStatus?.lastError ? (
           <section className="status-banner">
             <strong>Refresh error.</strong>
             <span>
               {liveStatus.lastError}
               {liveStatus.nextRefreshAt ? ` Next sweep: ${formatTimestamp(liveStatus.nextRefreshAt)}.` : ''}
             </span>
+          </section>
+        ) : null}
+
+        {loadingCohortLabels.length ? (
+          <section className="status-banner">
+            <strong>Loading selected category.</strong>
+            <span>{loadingCohortLabels.join(', ')} will be included as soon as its dashboard snapshot arrives.</span>
+          </section>
+        ) : null}
+
+        {erroredCohortLabels.length ? (
+          <section className="status-banner">
+            <strong>Category unavailable.</strong>
+            <span>{erroredCohortLabels.join(', ')} could not be loaded for the combined view.</span>
           </section>
         ) : null}
 
@@ -2702,8 +3479,9 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
               built by{' '}
               <a href="https://www.instagram.com/kcimc/" target="_blank" rel="noreferrer">
                 Kyle McDonald
-              </a>{' '}
-              /{' '}
+              </a>
+            </p>
+            <p className="hero-credit hero-link-row">
               <a href="https://github.com/kylemcdonald/ews" target="_blank" rel="noreferrer">
                 GitHub
               </a>{' '}
@@ -2724,10 +3502,10 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
           <div className="dial-stack">
             <EmergencySummary
               signal={compositeSignal}
-              latestSweep={formatTimestamp(dashboard.current?.asOf)}
+              latestSweep={formatTimestamp(visibleDashboard.current?.asOf)}
               actualCount={compositeSignal.actualConcurrentCount}
               expectedCount={compositeSignal.expectedConcurrentCount}
-              trackedCount={dashboard.cohort?.trackedCount ?? dashboard.watchlist?.trackedCount}
+              trackedCount={visibleDashboard.cohort?.trackedCount ?? visibleDashboard.watchlist?.trackedCount}
               maxSeatsAirborneEstimate={maxSeatsAirborneEstimate}
               onEmergencyLevelTap={handleEmergencyLevelTap}
             />
@@ -2743,9 +3521,14 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL }) {
         </section>
 
         <section className="details-stack">
-          <ArchiveChart data={archiveData} signal={compositeSignal} holidayWindows={holidayWindows} />
+          <ArchiveChart
+            data={archiveData}
+            signal={compositeSignal}
+            holidayWindows={holidayWindows}
+            cohortControls={cohortControls}
+          />
           <ModelSummaryList aircraft={liveAircraft} copy={cohortCopy} />
-          <AboutSystemCard cohort={dashboard.cohort} copy={cohortCopy} />
+          <AboutSystemCard cohort={visibleDashboard.cohort} copy={cohortCopy} />
           <FaqCard />
           <UpdatesCard copy={cohortCopy} />
         </section>
@@ -2766,19 +3549,19 @@ function App() {
     return <SignupPage />
   }
 
-  if (window.location.pathname === '/beta' || window.location.pathname.startsWith('/beta/')) {
-    return <DashboardApp dashboardUrl={BETA_DASHBOARD_URL} />
+  if (
+    window.location.pathname === '/beta' ||
+    window.location.pathname.startsWith('/beta/') ||
+    window.location.pathname === '/military' ||
+    window.location.pathname.startsWith('/military/') ||
+    window.location.pathname === '/untracked' ||
+    window.location.pathname.startsWith('/untracked/')
+  ) {
+    window.location.replace('/')
+    return null
   }
 
-  if (window.location.pathname === '/military' || window.location.pathname.startsWith('/military/')) {
-    return <DashboardApp dashboardUrl={MILITARY_DASHBOARD_URL} />
-  }
-
-  if (window.location.pathname === '/untracked' || window.location.pathname.startsWith('/untracked/')) {
-    return <DashboardApp dashboardUrl={UNTRACKED_DASHBOARD_URL} />
-  }
-
-  return <DashboardApp />
+  return <DashboardApp dashboardUrl={DASHBOARD_URL} enableCohortControls primaryCohortKind="business" />
 }
 
 export default App

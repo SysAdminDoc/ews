@@ -1,4 +1,8 @@
-/beta /beta/ 302
-/beta/* /index.html 200
+/beta / 301
+/beta/* / 301
+/military / 301
+/military/* / 301
+/untracked / 301
+/untracked/* / 301
 /signup /signup/ 302
 /signup/* /index.html 200

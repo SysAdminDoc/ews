@@ -67,6 +67,23 @@ const DEFAULT_ALARM_SIGMA_THRESHOLD = 7;
 const ARCHIVE_DECIMAL_PLACES = 2;
 const timeZonePartFormatters = new Map();
 
+function getDefaultConcurrentPredictionOptions() {
+  return {
+    concurrentPredictionModel: CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
+    weeklyBaselineTimeZone: CONCURRENT_WEEKLY_BASELINE_TIME_ZONE,
+  };
+}
+
+function resolveConcurrentPredictionOptions(options = {}) {
+  const defaults = getDefaultConcurrentPredictionOptions();
+  return {
+    ...defaults,
+    ...options,
+    concurrentPredictionModel: options.concurrentPredictionModel ?? defaults.concurrentPredictionModel,
+    weeklyBaselineTimeZone: options.weeklyBaselineTimeZone ?? defaults.weeklyBaselineTimeZone,
+  };
+}
+
 function mean(values) {
   const finiteValues = values.filter((value) => Number.isFinite(value));
   if (!finiteValues.length) {
@@ -1692,17 +1709,18 @@ function buildWeeklyBaselinePredictionContext(normalizedRows, options = {}) {
 }
 
 function buildConcurrentPredictionContext(rows, options = {}) {
+  const resolvedOptions = resolveConcurrentPredictionOptions(options);
   const normalizedRows = rows.map((row) => ({
     sampledAt: row.sampledAt,
     concurrentCount: Number(row.concurrentCount || 0),
   })).sort((left, right) => Date.parse(left.sampledAt) - Date.parse(right.sampledAt));
 
   if (
-    options.concurrentPredictionModel === CONCURRENT_WEEKLY_BASELINE_MODEL ||
-    options.concurrentPredictionModel === CONCURRENT_WEEKLY_DAY_RATIO_MODEL ||
-    options.concurrentPredictionModel === CONCURRENT_WEEKLY_US_HOLIDAY_MODEL
+    resolvedOptions.concurrentPredictionModel === CONCURRENT_WEEKLY_BASELINE_MODEL ||
+    resolvedOptions.concurrentPredictionModel === CONCURRENT_WEEKLY_DAY_RATIO_MODEL ||
+    resolvedOptions.concurrentPredictionModel === CONCURRENT_WEEKLY_US_HOLIDAY_MODEL
   ) {
-    return buildWeeklyBaselinePredictionContext(normalizedRows, options);
+    return buildWeeklyBaselinePredictionContext(normalizedRows, resolvedOptions);
   }
 
   const state = {
@@ -1759,7 +1777,7 @@ function buildConcurrentPredictionContext(rows, options = {}) {
       };
     }
 
-    const prediction = buildConcurrentPredictionFromState(row.sampledAt, row.concurrentCount, state, options);
+    const prediction = buildConcurrentPredictionFromState(row.sampledAt, row.concurrentCount, state, resolvedOptions);
     provisionalRecords.push({
       sampledAt: row.sampledAt,
       concurrentCount: row.concurrentCount,
@@ -1795,7 +1813,7 @@ function buildConcurrentPredictionContext(rows, options = {}) {
       const annualRatioKey = buildLocalPartsSlotKey(
         getTimeZoneCalendarParts(
           prediction.canonicalReferenceIso,
-          options.annualRatioTimeZone || CONCURRENT_ANNUAL_RATIO_TIME_ZONE,
+          resolvedOptions.annualRatioTimeZone || CONCURRENT_ANNUAL_RATIO_TIME_ZONE,
         ),
       );
       const annualRatioEntries = state.annualRatioHistory.get(annualRatioKey) || [];
@@ -1863,7 +1881,8 @@ function computeConcurrentPredictionModel(
   concurrentContext = null,
   options = {},
 ) {
-  const context = concurrentContext || buildConcurrentPredictionContext(getAllConcurrentMetrics(), options);
+  const resolvedOptions = resolveConcurrentPredictionOptions(options);
+  const context = concurrentContext || buildConcurrentPredictionContext(getAllConcurrentMetrics(), resolvedOptions);
   const referenceRecord = getNearestConcurrentRecord(context, referenceIso);
 
   if (referenceRecord) {
@@ -1921,7 +1940,7 @@ function computeConcurrentPredictionModel(
     };
   }
 
-  const prediction = buildConcurrentPredictionFromState(referenceIso, concurrentCount, context.state, options);
+  const prediction = buildConcurrentPredictionFromState(referenceIso, concurrentCount, context.state, resolvedOptions);
   const compositeSignal = computeBaselineSignal(
     Number(concurrentCount || 0),
     Number(prediction.expectedConcurrentCount || 0),
@@ -2050,17 +2069,18 @@ function buildDashboardPayload({
   liveStatus: liveStatusOverride = null,
   concurrentPredictionOptions = {},
 } = {}) {
+  const resolvedConcurrentPredictionOptions = resolveConcurrentPredictionOptions(concurrentPredictionOptions);
   const tracking = getTrackingSummary();
   const liveStatus = buildStoredHeatmapStatus(liveStatusOverride || {});
   const referenceIso = liveStatus.latestSampledAt || new Date().toISOString();
   const concurrentCount = getConcurrentCount(HEATMAP_SOURCE);
   const concurrentHistory = getAllConcurrentMetrics();
-  const concurrentContext = buildConcurrentPredictionContext(concurrentHistory, concurrentPredictionOptions);
+  const concurrentContext = buildConcurrentPredictionContext(concurrentHistory, resolvedConcurrentPredictionOptions);
   const currentModel = computeConcurrentPredictionModel(
     referenceIso,
     concurrentCount,
     concurrentContext,
-    concurrentPredictionOptions,
+    resolvedConcurrentPredictionOptions,
   );
   const trailingConcurrentRecords = getTrailingConcurrentRecords(concurrentContext.records);
   const archiveSeries = compactArchiveSeries(trailingConcurrentRecords);
@@ -2187,6 +2207,7 @@ module.exports = {
   buildStoredHeatmapStatus,
   buildConcurrentPredictionContext,
   computeConcurrentPredictionModel,
+  getDefaultConcurrentPredictionOptions,
   CONCURRENT_ANNUAL_RATIO_MODEL,
   CONCURRENT_ANNUAL_RATIO_TIME_ZONE,
   CONCURRENT_WEEKLY_BASELINE_MODEL,

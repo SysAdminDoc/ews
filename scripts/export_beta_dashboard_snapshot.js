@@ -7,7 +7,7 @@ function parseArgs(argv) {
   const args = {
     output: null,
     db: process.env.EWS_BETA_DB_PATH || path.join(__dirname, "..", "data", "ews-beta.sqlite"),
-    endpoint: "beta",
+    endpoint: "main",
     cohort: "global_business_jet",
   };
 
@@ -59,7 +59,9 @@ function main() {
     CONCURRENT_WEEKLY_BASELINE_TIME_ZONE,
     CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
   } = require("../server/dashboard");
-  const output = args.output || path.join(DATA_DIR, "published", "beta-dashboard.json");
+  const output =
+    args.output ||
+    path.join(DATA_DIR, "published", args.endpoint === "main" ? "dashboard.json" : `${args.endpoint}-dashboard.json`);
   const concurrentPredictionOptions = {
     concurrentPredictionModel: CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
     weeklyBaselineTimeZone: process.env.EWS_BETA_MODEL_TIME_ZONE || CONCURRENT_WEEKLY_BASELINE_TIME_ZONE,
@@ -79,9 +81,6 @@ function main() {
       predictionTimeZone: concurrentPredictionOptions.weeklyBaselineTimeZone,
     },
   };
-  if (args.endpoint === "beta") {
-    snapshot.beta = snapshot.page;
-  }
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, `${JSON.stringify(snapshot, null, 2)}\n`);
   console.log(

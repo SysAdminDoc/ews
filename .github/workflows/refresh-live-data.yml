@@ -17,13 +17,12 @@ env:
   TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
   PUBLIC_BUCKET: ews-public
   STATE_BUCKET: ews-state
-  BETA_DB_PATH: data/ews-beta.sqlite
+  MAIN_DB_PATH: data/ews-beta.sqlite
   MILITARY_DB_PATH: data/ews-military.sqlite
   UNTRACKED_DB_PATH: data/ews-untracked.sqlite
   EWS_PUBLIC_URL: https://ews.kylemcdonald.net/
   EWS_RSS_URL: https://ews.kylemcdonald.net/rss.xml
   VITE_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/dashboard.json
-  VITE_BETA_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/beta-dashboard.json
   VITE_MILITARY_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/military-dashboard.json
   VITE_UNTRACKED_DASHBOARD_URL: https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/untracked-dashboard.json
 
@@ -57,31 +56,17 @@ jobs:
           npm ci
           pip install -r requirements.txt
 
-      - name: Restore deployment state
+      - name: Restore main deployment state
         run: |
           mkdir -p data
           for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object get "${STATE_BUCKET}/ews.sqlite" --file data/ews.sqlite --remote; then
+            if npx wrangler r2 object get "${STATE_BUCKET}/ews-beta.sqlite" --file "${MAIN_DB_PATH}" --remote; then
               exit 0
             fi
-            echo "R2 restore attempt ${attempt} failed."
+            echo "R2 main restore attempt ${attempt} failed."
             if [ "$attempt" -eq 5 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 15))
-          done
-
-      - name: Restore beta deployment state
-        run: |
-          mkdir -p data
-          for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object get "${STATE_BUCKET}/ews-beta.sqlite" --file "${BETA_DB_PATH}" --remote; then
-              exit 0
-            fi
-            echo "R2 beta restore attempt ${attempt} failed."
-            if [ "$attempt" -eq 5 ]; then
-              python3 scripts/import_faa_cohort.py --db "${BETA_DB_PATH}"
-              python3 scripts/import_global_cohort.py --db "${BETA_DB_PATH}"
+              python3 scripts/import_faa_cohort.py --db "${MAIN_DB_PATH}"
+              python3 scripts/import_global_cohort.py --db "${MAIN_DB_PATH}"
               exit 0
             fi
             sleep $((attempt * 15))
@@ -105,11 +90,8 @@ jobs:
           echo "R2 untracked state is not available yet; seeding a new deployment DB."
           python3 scripts/track_non_icao_hex.py --db "${UNTRACKED_DB_PATH}" --latest-live --cache-dir data/cache/adsbx_live --replace-live-snapshot
 
-      - name: Refresh latest heatmap
-        run: python3 scripts/update_latest_heatmap.py
-
-      - name: Refresh latest beta heatmap
-        run: python3 scripts/update_latest_heatmap.py --db "${BETA_DB_PATH}"
+      - name: Refresh latest main heatmap
+        run: python3 scripts/update_latest_heatmap.py --db "${MAIN_DB_PATH}"
 
       - name: Refresh latest military heatmap
         run: python3 scripts/update_latest_heatmap.py --db "${MILITARY_DB_PATH}"
@@ -118,10 +100,7 @@ jobs:
         run: python3 scripts/track_non_icao_hex.py --db "${UNTRACKED_DB_PATH}" --latest-live --cache-dir data/cache/adsbx_live --replace-live-snapshot
 
       - name: Export published dashboard snapshot
-        run: node scripts/export_dashboard_snapshot.js --output tmp/dashboard.json
-
-      - name: Export published beta dashboard snapshot
-        run: node scripts/export_beta_dashboard_snapshot.js --db "${BETA_DB_PATH}" --output tmp/beta-dashboard.json
+        run: node scripts/export_beta_dashboard_snapshot.js --db "${MAIN_DB_PATH}" --output tmp/dashboard.json --endpoint main --cohort global_business_jet
 
       - name: Export published military dashboard snapshot
         run: node scripts/export_beta_dashboard_snapshot.js --db "${MILITARY_DB_PATH}" --output tmp/military-dashboard.json --endpoint military --cohort global_military_aircraft
@@ -130,36 +109,23 @@ jobs:
         run: node scripts/export_beta_dashboard_snapshot.js --db "${UNTRACKED_DB_PATH}" --output tmp/untracked-dashboard.json --endpoint untracked --cohort non_icao_untracked
 
       - name: Send Telegram emergency alert
-        run: node scripts/send_telegram_alert.js
+        run: EWS_DB_PATH="${MAIN_DB_PATH}" node scripts/send_telegram_alert.js
 
       - name: Update RSS feed
         id: rss
         run: |
-          RSS_RESULT="$(node scripts/update_rss_feed.js --output tmp/rss.xml)"
+          RSS_RESULT="$(EWS_DB_PATH="${MAIN_DB_PATH}" node scripts/update_rss_feed.js --output tmp/rss.xml)"
           echo "$RSS_RESULT"
           RSS_UPDATED="$(node -e 'const data = JSON.parse(process.argv[1]); process.stdout.write(data.updated ? "true" : "false")' "$RSS_RESULT")"
           echo "updated=${RSS_UPDATED}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload deployment state
+      - name: Upload main deployment state
         run: |
           for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object put "${STATE_BUCKET}/ews.sqlite" --file data/ews.sqlite --remote; then
+            if npx wrangler r2 object put "${STATE_BUCKET}/ews-beta.sqlite" --file "${MAIN_DB_PATH}" --remote; then
               exit 0
             fi
-            echo "R2 state upload attempt ${attempt} failed."
-            if [ "$attempt" -eq 5 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 15))
-          done
-
-      - name: Upload beta deployment state
-        run: |
-          for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object put "${STATE_BUCKET}/ews-beta.sqlite" --file "${BETA_DB_PATH}" --remote; then
-              exit 0
-            fi
-            echo "R2 beta state upload attempt ${attempt} failed."
+            echo "R2 main state upload attempt ${attempt} failed."
             if [ "$attempt" -eq 5 ]; then
               exit 1
             fi
@@ -228,23 +194,6 @@ jobs:
               exit 0
             fi
             echo "R2 snapshot publish attempt ${attempt} failed."
-            if [ "$attempt" -eq 5 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 15))
-          done
-
-      - name: Publish beta live snapshot
-        run: |
-          for attempt in 1 2 3 4 5; do
-            if npx wrangler r2 object put "${PUBLIC_BUCKET}/beta-dashboard.json" \
-              --file tmp/beta-dashboard.json \
-              --remote \
-              --content-type application/json \
-              --cache-control "public, max-age=300"; then
-              exit 0
-            fi
-            echo "R2 beta snapshot publish attempt ${attempt} failed."
             if [ "$attempt" -eq 5 ]; then
               exit 1
             fi

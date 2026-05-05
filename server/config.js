@@ -6,7 +6,7 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const CONFIG_DIR = path.join(ROOT_DIR, "config");
 const DB_PATH = process.env.EWS_DB_PATH
   ? path.resolve(process.env.EWS_DB_PATH)
-  : path.join(DATA_DIR, "ews.sqlite");
+  : path.join(DATA_DIR, "ews-beta.sqlite");
 const SCHEMA_PATH = path.join(ROOT_DIR, "schema.sql");
 const WATCHLIST_PATH = path.join(CONFIG_DIR, "watchlist.json");
 const WATCHLIST_EXAMPLE_PATH = path.join(CONFIG_DIR, "watchlist.example.json");

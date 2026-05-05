@@ -3,7 +3,7 @@ const path = require("node:path");
 const express = require("express");
 const cors = require("cors");
 const { loadEnvFile } = require("./env");
-const { CLIENT_DIST_DIR, readWatchlist } = require("./config");
+const { CLIENT_DIST_DIR, DATA_DIR, readWatchlist } = require("./config");
 const {
   initDb,
   getMetaValue,
@@ -21,9 +21,28 @@ loadEnvFile();
 const app = express();
 const PORT = Number(process.env.PORT || 3030);
 const DASHBOARD_SNAPSHOT_META_KEY = "dashboard_snapshot_v1";
+const PUBLISHED_DASHBOARD_FILES = new Map([
+  ["/dashboard.json", "dashboard.json"],
+  ["/military-dashboard.json", "military-dashboard.json"],
+  ["/untracked-dashboard.json", "untracked-dashboard.json"],
+]);
 
 app.use(cors());
 app.use(express.json());
+
+app.use((request, response, next) => {
+  const legacyDashboardRoutes = ["/beta", "/military", "/untracked"];
+  if (
+    legacyDashboardRoutes.some(
+      (routePath) => request.path === routePath || request.path.startsWith(`${routePath}/`),
+    )
+  ) {
+    response.redirect(301, "/");
+    return;
+  }
+
+  next();
+});
 
 function loadPersistedDashboardSnapshot() {
   const savedValue = getMetaValue(DASHBOARD_SNAPSHOT_META_KEY);
@@ -161,6 +180,29 @@ app.get("/api/dashboard", (_request, response) => {
   }
 
   response.json(snapshot);
+});
+
+for (const [routePath, fileName] of PUBLISHED_DASHBOARD_FILES) {
+  app.get(routePath, (_request, response) => {
+    const snapshotPath = path.join(DATA_DIR, "published", fileName);
+    if (!fs.existsSync(snapshotPath)) {
+      response.status(503).json({
+        error: `Published dashboard snapshot is not available at ${snapshotPath}.`,
+      });
+      return;
+    }
+
+    response
+      .type("application/json")
+      .set("Cache-Control", "no-store")
+      .sendFile(snapshotPath);
+  });
+}
+
+app.get("/beta-dashboard.json", (_request, response) => {
+  response.status(410).json({
+    error: "The beta dashboard snapshot has been merged into /dashboard.json.",
+  });
 });
 
 app.get(["/rss.xml", "/feed.xml"], (_request, response) => {
