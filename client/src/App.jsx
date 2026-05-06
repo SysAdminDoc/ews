@@ -2673,6 +2673,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   const mapRef = useRef(null)
   const minZoomRef = useRef(0)
   const clampingRef = useRef(false)
+  const programmaticZoomEndRef = useRef(null)
   const aircraftFeatureCollectionRef = useRef(createEmptyAircraftFeatureCollection())
   const displayedMarkerId = hoveredMarkerId || selectedMarkerId
   const aircraftByMarkerId = useMemo(() => {
@@ -2887,6 +2888,10 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
     return () => {
       cancelled = true
       resizeObserver.disconnect()
+      if (programmaticZoomEndRef.current) {
+        map.off('moveend', programmaticZoomEndRef.current)
+        programmaticZoomEndRef.current = null
+      }
       map.remove()
       if (mapRef.current === map) {
         mapRef.current = null
@@ -2905,6 +2910,25 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
       minZoomRef.current,
       minZoomRef.current + MAPLIBRE_MAX_ZOOM_DELTA,
     )
+
+    if (Math.abs(nextZoom - map.getZoom()) <= MAPLIBRE_ZOOM_EPSILON / 10) {
+      return
+    }
+
+    if (programmaticZoomEndRef.current) {
+      map.off('moveend', programmaticZoomEndRef.current)
+      programmaticZoomEndRef.current = null
+    }
+
+    clampingRef.current = true
+    const finishProgrammaticZoom = () => {
+      clampingRef.current = false
+      programmaticZoomEndRef.current = null
+      enforceMapLibreBounds(map, minZoomRef.current, clampingRef)
+      setMapZoom(map.getZoom())
+    }
+    programmaticZoomEndRef.current = finishProgrammaticZoom
+    map.once('moveend', finishProgrammaticZoom)
     map.easeTo({
       zoom: nextZoom,
       duration: 180,
