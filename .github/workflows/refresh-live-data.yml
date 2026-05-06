@@ -15,6 +15,9 @@ env:
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_BOT_USERNAME: ${{ secrets.TELEGRAM_BOT_USERNAME }}
   TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+  EWS_INTERNAL_ALERT_TOKEN: ${{ secrets.EWS_INTERNAL_ALERT_TOKEN }}
+  EWS_INTERNAL_ALERT_URL: https://ews.kylemcdonald.net/api/internal/level5-alert
+  EWS_INTERNAL_CLEANUP_URL: https://ews.kylemcdonald.net/api/internal/anonymize-pending-signups
   PUBLIC_BUCKET: ews-public
   STATE_BUCKET: ews-state
   MAIN_DB_PATH: data/ews-main.sqlite
@@ -118,6 +121,28 @@ jobs:
           echo "$RSS_RESULT"
           RSS_UPDATED="$(node -e 'const data = JSON.parse(process.argv[1]); process.stdout.write(data.updated ? "true" : "false")' "$RSS_RESULT")"
           echo "updated=${RSS_UPDATED}" >> "$GITHUB_OUTPUT"
+
+      - name: Send SMS and email emergency alert
+        run: |
+          if [ -z "${EWS_INTERNAL_ALERT_TOKEN}" ]; then
+            echo "Skipping SMS/email alert trigger because EWS_INTERNAL_ALERT_TOKEN is not configured."
+            exit 0
+          fi
+
+          curl -fsS -X POST "${EWS_INTERNAL_ALERT_URL}" \
+            -H "Authorization: Bearer ${EWS_INTERNAL_ALERT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @tmp/dashboard.json
+
+      - name: Anonymize unfinished notification signups
+        run: |
+          if [ -z "${EWS_INTERNAL_ALERT_TOKEN}" ]; then
+            echo "Skipping pending signup anonymization because EWS_INTERNAL_ALERT_TOKEN is not configured."
+            exit 0
+          fi
+
+          curl -fsS -X POST "${EWS_INTERNAL_CLEANUP_URL}" \
+            -H "Authorization: Bearer ${EWS_INTERNAL_ALERT_TOKEN}"
 
       - name: Upload main deployment state
         run: |

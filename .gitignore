@@ -4,6 +4,9 @@ client/dist/
 .env
 .env.local
 .env.*.local
+.dev.vars
+wrangler.toml
+.wrangler/
 data/
 tmp/
 config/watchlist.json

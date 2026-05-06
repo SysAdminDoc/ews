@@ -7,6 +7,8 @@ on:
       - main
     paths:
       - client/**
+      - functions/**
+      - migrations/**
       - package.json
       - package-lock.json
       - .github/workflows/deploy-pages.yml

@@ -1,12 +1,17 @@
-import { memo, startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
-import { geoEqualEarth, geoGraticule10, geoMercator, geoPath } from 'd3-geo'
-import { feature } from 'topojson-client'
-import worldAtlas from 'world-atlas/countries-110m.json'
+import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import maplibregl from 'maplibre-gl'
+import proj4 from 'proj4'
+import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
 
-const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || '/dashboard.json'
-const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || '/military-dashboard.json'
-const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || '/untracked-dashboard.json'
+const DEFAULT_DASHBOARD_URL = 'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/dashboard.json'
+const DEFAULT_MILITARY_DASHBOARD_URL =
+  'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/military-dashboard.json'
+const DEFAULT_UNTRACKED_DASHBOARD_URL =
+  'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/untracked-dashboard.json'
+const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || DEFAULT_DASHBOARD_URL
+const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || DEFAULT_MILITARY_DASHBOARD_URL
+const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || DEFAULT_UNTRACKED_DASHBOARD_URL
 const DISCORD_BOT_URL = 'https://jamiew.github.io/apocalypse-ews-discord/'
 const COHORT_CONFIGS = [
   { id: 'business', label: 'Business jets', dashboardUrl: DASHBOARD_URL },
@@ -16,12 +21,9 @@ const COHORT_CONFIGS = [
 const COHORT_LOADING_DELAY_MS = 1000
 const DASHBOARD_CACHE_BUSTER_MINUTES = 5
 const DASHBOARD_POLL_INTERVAL_MS = 5 * 60_000
-const MAP_WIDTH = 800
-const MAP_HEIGHT = 410
 const AIRCRAFT_MARKER_PATH = 'M0 -9 L2.2 -1.5 L8 1.2 L8 3.4 L1.8 2.1 L1.8 6.4 L4.2 8 L4.2 9 L0 7.5 L-4.2 9 L-4.2 8 L-1.8 6.4 L-1.8 2.1 L-8 3.4 L-8 1.2 L-2.2 -1.5 Z'
 const ARCHIVE_DAY_MS = 24 * 60 * 60 * 1000
 const ADSB_DATA_UNAVAILABLE_THRESHOLD_MS = ARCHIVE_DAY_MS
-const worldGeographies = feature(worldAtlas, worldAtlas.objects.countries).features
 
 const NARROW_HISTORY_BREAKPOINT = 820
 const CHART_TICK_COLOR = '#000000'
@@ -38,7 +40,6 @@ const PREDICTION_BAND_MODELS = new Set([
   CONCURRENT_WEEKLY_DAY_RATIO_MODEL,
   CONCURRENT_WEEKLY_US_HOLIDAY_MODEL,
 ])
-const WORLD_FEATURE_COLLECTION = { type: 'FeatureCollection', features: worldGeographies }
 const LOADING_ANIMATION_URL = '/animation.mp4'
 const BACKGROUND_URL = '/backgrounds/soft-cartoon-tile-15.webp'
 const BACKGROUND_PRELOAD_LINK_ID = 'background-preload'
@@ -48,11 +49,50 @@ const ARCHIVE_CHART_HEIGHT = 320
 const ARCHIVE_DIVERGENCE_HEIGHT = 180
 const ARCHIVE_CHART_MARGIN = { top: 16, right: 18, bottom: 28, left: 44 }
 const ARCHIVE_CHART_MOBILE_MARGIN = { top: 18, right: 16, bottom: 42, left: 54 }
-const MAP_ZOOM_STEP = 1.45
-const MAP_ZOOM_LEVEL_COUNT = 5
-const MAP_MIN_ZOOM = 1
-const MAP_MAX_ZOOM = MAP_ZOOM_STEP ** (MAP_ZOOM_LEVEL_COUNT - 1)
-const MAP_ZOOM_EPSILON = 0.000001
+const MAPLIBRE_ZOOM_STEP = Math.log2(1.45)
+const MAPLIBRE_MAX_ZOOM_DELTA = 4
+const MAPLIBRE_ZOOM_EPSILON = 0.01
+const MAPLIBRE_AIRCRAFT_SOURCE_ID = 'aircraft'
+const MAPLIBRE_AIRCRAFT_HALO_LAYER_ID = 'aircraft-halo'
+const MAPLIBRE_AIRCRAFT_ICON_LAYER_ID = 'aircraft-icons'
+const MAPLIBRE_WORLD_BOUNDS = [[-180, -65.542], [180, 65.542]]
+const MAPLIBRE_CONUS_GEOGRAPHIC_BOUNDS = [[-124.85, 24.4], [-66.9, 49.6]]
+const MAPLIBRE_WORLD_FIT_PADDING = 12
+const MAPLIBRE_EQUAL_EARTH_GRID_FACTOR = 20037508.3427892 / 17243959.06
+const MAPLIBRE_WESTERN_SAHARA_LAYER_MAX_ZOOM = 5
+// The bbox Equal Earth vector tiles omit SAH from the country layer below z5.
+const WESTERN_SAHARA_GEOGRAPHIC_POLYGON = [
+  [
+    [-8.66559, 27.656426],
+    [-8.665124, 27.589479],
+    [-8.6844, 27.395744],
+    [-8.687294, 25.881056],
+    [-11.969419, 25.933353],
+    [-11.937224, 23.374594],
+    [-12.874222, 23.284832],
+    [-13.118754, 22.77122],
+    [-12.929102, 21.327071],
+    [-16.845194, 21.333323],
+    [-17.063423, 20.999752],
+    [-17.020428, 21.42231],
+    [-17.002962, 21.420734],
+    [-14.750955, 21.5006],
+    [-14.630833, 21.86094],
+    [-14.221168, 22.310163],
+    [-13.89111, 23.691009],
+    [-12.500963, 24.770116],
+    [-12.030759, 26.030866],
+    [-11.71822, 26.104092],
+    [-11.392555, 26.883424],
+    [-10.551263, 26.990808],
+    [-10.189424, 26.860945],
+    [-9.735343, 26.860945],
+    [-9.413037, 27.088476],
+    [-8.794884, 27.120696],
+    [-8.817828, 27.656426],
+    [-8.66559, 27.656426],
+  ],
+]
 const EMERGENCY_LEVEL_COUNT = 5
 const EMERGENCY_SCHEME_TAP_WINDOW_MS = 700
 const MIN_ALARM_SIGMA_THRESHOLD = 4
@@ -60,8 +100,10 @@ const DEFAULT_ALARM_SIGMA_THRESHOLD = 7
 const AIRCRAFT_MODEL_DETAIL_RANK_LIMIT = 40
 const AIRCRAFT_MODEL_WIKIPEDIA_URLS = new Map([
   ['BOMBARDIER AEROSPACE INC BD-100-1A10', 'https://en.wikipedia.org/wiki/Bombardier_Challenger_300'],
+  ['BOMBARDIER BD-100 CHALLENGER 350', 'https://en.wikipedia.org/wiki/Bombardier_Challenger_300'],
   ['BOMBARDIER INC BD-100-1A10', 'https://en.wikipedia.org/wiki/Bombardier_Challenger_300'],
   ['EMBRAER EXECUTIVE AIRCRAFT INC EMB-505', 'https://en.wikipedia.org/wiki/Embraer_Phenom_300'],
+  ['EMBRAER EMB-505 PHENOM 300', 'https://en.wikipedia.org/wiki/Embraer_Phenom_300'],
   ['TEXTRON AVIATION INC 680A', 'https://en.wikipedia.org/wiki/Cessna_Citation_Latitude'],
   ['CESSNA 560XL', 'https://en.wikipedia.org/wiki/Cessna_Citation_Excel'],
   ['TEXTRON AVIATION INC 560XL', 'https://en.wikipedia.org/wiki/Cessna_Citation_Excel'],
@@ -76,12 +118,15 @@ const AIRCRAFT_MODEL_WIKIPEDIA_URLS = new Map([
   ['GULFSTREAM AEROSPACE GV-SP (G550)', 'https://en.wikipedia.org/wiki/Gulfstream_G550'],
   ['LEARJET INC 60', 'https://en.wikipedia.org/wiki/Learjet_60'],
   ['RAYTHEON AIRCRAFT COMPANY HAWKER 800XP', 'https://en.wikipedia.org/wiki/Hawker_800'],
+  ['RAYTHEON AIRCRAFT COMPANY HAWKER 850XP', 'https://en.wikipedia.org/wiki/Hawker_800'],
   ['CESSNA 510', 'https://en.wikipedia.org/wiki/Cessna_Citation_Mustang'],
   ['CESSNA 550', 'https://en.wikipedia.org/wiki/Cessna_Citation_II'],
+  ['CESSNA S550', 'https://en.wikipedia.org/wiki/Cessna_Citation_II'],
   ['DASSAULT AVIATION FALCON 2000EX', 'https://en.wikipedia.org/wiki/Dassault_Falcon_2000'],
   ['CESSNA 650', 'https://en.wikipedia.org/wiki/Cessna_Citation_III'],
   ['RAYTHEON AIRCRAFT COMPANY 400A', 'https://en.wikipedia.org/wiki/Hawker_400'],
   ['PILATUS AIRCRAFT LTD PC-24', 'https://en.wikipedia.org/wiki/Pilatus_PC-24'],
+  ['PILATUS PC-24', 'https://en.wikipedia.org/wiki/Pilatus_PC-24'],
   ['TEXTRON AVIATION INC 525C', 'https://en.wikipedia.org/wiki/Cessna_CitationJet/M2'],
   ['GULFSTREAM AEROSPACE CORP GVII-G600', 'https://en.wikipedia.org/wiki/Gulfstream_G500/G600'],
   ['HAWKER BEECHCRAFT CORP HAWKER 900XP', 'https://en.wikipedia.org/wiki/Hawker_800'],
@@ -130,7 +175,9 @@ const AIRCRAFT_MODEL_WIKIPEDIA_URLS = new Map([
   ['GULFSTREAM AEROSPACE GIV-X (G450)', 'https://en.wikipedia.org/wiki/Gulfstream_IV'],
   ['GULFSTREAM G650', 'https://en.wikipedia.org/wiki/Gulfstream_G650/G700/G800'],
   ['IAI LTD GULFSTREAM G280', 'https://en.wikipedia.org/wiki/Gulfstream_G280'],
+  ['ISRAEL AIRCRAFT INDUSTRIES ASTRA SPX', 'https://en.wikipedia.org/wiki/Gulfstream_G100'],
   ['ISRAEL AIRCRAFT INDUSTRIES GULFSTREAM 200', 'https://en.wikipedia.org/wiki/Gulfstream_G200'],
+  ['TEXTRON AVIATION INC 680', 'https://en.wikipedia.org/wiki/Cessna_Citation_Sovereign'],
   ['TEXTRON AVIATION INC 700', 'https://en.wikipedia.org/wiki/Cessna_Citation_Longitude'],
   ['TEXTRON AVIATION INC. 525B', 'https://en.wikipedia.org/wiki/Cessna_CitationJet/M2'],
   ['AERMACCHI M-346 MASTER', 'https://en.wikipedia.org/wiki/Alenia_Aermacchi_M-346_Master'],
@@ -547,65 +594,12 @@ function clearCurrentTextSelection() {
   }
 }
 
-function constrainMapTransform(transform) {
-  const scale = clamp(transform.scale, MAP_MIN_ZOOM, MAP_MAX_ZOOM)
-  const minTranslateX = MAP_WIDTH - MAP_WIDTH * scale
-  const minTranslateY = MAP_HEIGHT - MAP_HEIGHT * scale
-
-  return {
-    scale,
-    translateX: clamp(transform.translateX, minTranslateX, 0),
-    translateY: clamp(transform.translateY, minTranslateY, 0),
-  }
-}
-
 function normalizeDegrees(value) {
   if (!Number.isFinite(value)) {
     return null
   }
 
   return ((value % 360) + 360) % 360
-}
-
-function getProjectedAircraftRotation(plane, projection) {
-  const path = Array.isArray(plane.path) ? [...plane.path] : []
-  const currentPosition = { lat: plane.lat, lon: plane.lon }
-  const latestPathPoint = path[path.length - 1]
-
-  if (
-    Number.isFinite(currentPosition.lat) &&
-    Number.isFinite(currentPosition.lon) &&
-    (!latestPathPoint ||
-      latestPathPoint.lat !== currentPosition.lat ||
-      latestPathPoint.lon !== currentPosition.lon)
-  ) {
-    path.push(currentPosition)
-  }
-
-  const projectedPath = path
-    .map((point) => {
-      if (!Number.isFinite(point?.lat) || !Number.isFinite(point?.lon)) {
-        return null
-      }
-
-      return projection([point.lon, point.lat])
-    })
-    .filter(Boolean)
-
-  for (let index = projectedPath.length - 1; index > 0; index -= 1) {
-    const currentPoint = projectedPath[index]
-    const previousPoint = projectedPath[index - 1]
-    const deltaX = currentPoint[0] - previousPoint[0]
-    const deltaY = currentPoint[1] - previousPoint[1]
-
-    if (Math.hypot(deltaX, deltaY) < 0.5) {
-      continue
-    }
-
-    return normalizeDegrees((Math.atan2(deltaX, -deltaY) * 180) / Math.PI)
-  }
-
-  return normalizeDegrees(Number(plane.track))
 }
 
 function findFirstIndexAtOrAfter(values, target) {
@@ -1757,23 +1751,6 @@ function buildCombinedDashboardView(primaryDashboard, selectedCohorts, extraDash
   }
 }
 
-function createWorldProjection() {
-  return geoEqualEarth().fitExtent(
-    [
-      [20, 16],
-      [780, 394],
-    ],
-    WORLD_FEATURE_COLLECTION,
-  )
-}
-
-function createUnitedStatesProjection() {
-  return geoMercator()
-    .center([-98.5, 38.5])
-    .scale(790)
-    .translate([MAP_WIDTH / 2, MAP_HEIGHT / 2 + 24])
-}
-
 function EmergencySummary({
   signal,
   latestSweep,
@@ -2142,82 +2119,534 @@ function ArchiveChartPanel({ data, signal, holidayWindows, defaultWindowDays, co
   )
 }
 
-const MapBaseLayer = memo(function MapBaseLayer({ geographyPaths, graticulePath, isNarrowLayout }) {
-  return (
-    <>
-      {!isNarrowLayout ? <rect x="8" y="8" width="784" height="394" rx="198" className="map-sphere" /> : null}
-      <path d={graticulePath} className="map-graticule" />
-      {geographyPaths.map((geo) => (
-        <path key={geo.key} d={geo.path} className="map-geography" />
-      ))}
-    </>
+proj4.defs(
+  'EPSG:8857',
+  '+proj=eqearth +lon_0=0 +x_0=0 +y_0=0 +R=6371008.7714 +units=m +no_defs +type=crs',
+)
+
+function geogLonLatToEqualEarthMercatorLonLat(coordinate) {
+  const sourceLon = Number(coordinate?.[0])
+  const sourceLat = Number(coordinate?.[1])
+  if (!Number.isFinite(sourceLon) || !Number.isFinite(sourceLat)) {
+    return null
+  }
+
+  const equalEarthMeters = proj4('EPSG:4326', 'EPSG:8857', [
+    clamp(sourceLon, -180, 180),
+    clamp(sourceLat, -90, 90),
+  ])
+  const transformed = proj4('EPSG:3857', 'EPSG:4326', [
+    equalEarthMeters[0] * MAPLIBRE_EQUAL_EARTH_GRID_FACTOR,
+    equalEarthMeters[1] * MAPLIBRE_EQUAL_EARTH_GRID_FACTOR,
+  ])
+  if (!Number.isFinite(transformed?.[0]) || !Number.isFinite(transformed?.[1])) {
+    return null
+  }
+
+  let transformedLon = transformed[0]
+  if (sourceLon <= -179.999 && transformedLon > 0) {
+    transformedLon = -Math.abs(transformedLon)
+  } else if (sourceLon >= 179.999 && transformedLon < 0) {
+    transformedLon = Math.abs(transformedLon)
+  }
+
+  return [
+    clamp(transformedLon, -180, 180),
+    clamp(transformed[1], -85, 85),
+    ...coordinate.slice(2),
+  ]
+}
+
+function createEqualEarthBoundsFromGeographicBounds([[west, south], [east, north]]) {
+  const transformedPoints = []
+  const steps = 24
+  for (let index = 0; index <= steps; index += 1) {
+    const fraction = index / steps
+    const lon = west + (east - west) * fraction
+    const lat = south + (north - south) * fraction
+    transformedPoints.push(
+      geogLonLatToEqualEarthMercatorLonLat([lon, south]),
+      geogLonLatToEqualEarthMercatorLonLat([lon, north]),
+      geogLonLatToEqualEarthMercatorLonLat([west, lat]),
+      geogLonLatToEqualEarthMercatorLonLat([east, lat]),
+    )
+  }
+
+  const validPoints = transformedPoints.filter(Boolean)
+  return [
+    [
+      Math.min(...validPoints.map((point) => point[0])),
+      Math.min(...validPoints.map((point) => point[1])),
+    ],
+    [
+      Math.max(...validPoints.map((point) => point[0])),
+      Math.max(...validPoints.map((point) => point[1])),
+    ],
+  ]
+}
+
+const MAPLIBRE_CONUS_BOUNDS = createEqualEarthBoundsFromGeographicBounds(MAPLIBRE_CONUS_GEOGRAPHIC_BOUNDS)
+
+function getDestinationLonLat(lon, lat, bearingDegrees, distanceDegrees = 1) {
+  const angularDistance = (distanceDegrees * Math.PI) / 180
+  const bearing = (bearingDegrees * Math.PI) / 180
+  const lat1 = (lat * Math.PI) / 180
+  const lon1 = (lon * Math.PI) / 180
+  const sinLat1 = Math.sin(lat1)
+  const cosLat1 = Math.cos(lat1)
+  const sinDistance = Math.sin(angularDistance)
+  const cosDistance = Math.cos(angularDistance)
+  const lat2 = Math.asin((sinLat1 * cosDistance) + (cosLat1 * sinDistance * Math.cos(bearing)))
+  const lon2 = lon1 + Math.atan2(
+    Math.sin(bearing) * sinDistance * cosLat1,
+    cosDistance - (sinLat1 * Math.sin(lat2)),
   )
-})
 
-const MapMarkerLayer = memo(function MapMarkerLayer({
-  isNarrowLayout,
-  markerCounterScale,
-  markerHaloRadius,
-  markerHitRadius,
-  markerIconScale,
-  markers,
-  onMarkerActivate,
-  onMarkerHoverEnd,
-  onMarkerHoverStart,
-  selectedMarkerId,
-}) {
-  return markers.map((marker) => (
-    <g
-      key={marker.id}
-      data-marker-id={marker.id}
-      className={`map-marker map-marker-${marker.cohortKind || 'business'}${marker.id === selectedMarkerId ? ' map-marker-active' : ''}${isNarrowLayout ? ' map-marker-touch' : ''}`}
-      transform={`translate(${marker.x} ${marker.y})`}
-      onFocus={() => onMarkerHoverStart(marker.id)}
-      onBlur={() => onMarkerHoverEnd(marker.id)}
-      onClick={(event) => {
-        if (isNarrowLayout) {
-          return
-        }
+  return [
+    (((lon2 * 180) / Math.PI + 540) % 360) - 180,
+    (lat2 * 180) / Math.PI,
+  ]
+}
 
-        event.stopPropagation()
-        onMarkerActivate(marker.id)
-      }}
-      onPointerDown={(event) => {
-        clearCurrentTextSelection()
+function getProjectedAircraftRotation(plane, projectedCoordinate) {
+  const path = Array.isArray(plane?.path) ? [...plane.path] : []
+  const currentPosition = { lat: Number(plane?.lat), lon: Number(plane?.lon) }
+  const latestPathPoint = path[path.length - 1]
 
-        if (!isNarrowLayout) {
-          event.stopPropagation()
-          return
-        }
+  if (
+    Number.isFinite(currentPosition.lat) &&
+    Number.isFinite(currentPosition.lon) &&
+    (!latestPathPoint ||
+      Number(latestPathPoint.lat) !== currentPosition.lat ||
+      Number(latestPathPoint.lon) !== currentPosition.lon)
+  ) {
+    path.push(currentPosition)
+  }
 
-        event.preventDefault()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onMarkerActivate(marker.id)
-        }
-      }}
-      tabIndex={0}
-      role="button"
-      aria-pressed={marker.id === selectedMarkerId}
-      aria-label={marker.ariaLabel}
-    >
-      <g className="map-marker-visual" transform={`scale(${markerCounterScale})`}>
-        <circle r={markerHitRadius} className="map-marker-hit" />
-        <circle r={markerHaloRadius} className="map-marker-halo" />
-        {marker.shape === 'circle' ? (
-          <circle r={markerIconScale * 4.4} className="map-marker-circle" />
-        ) : (
-          <g transform={`rotate(${marker.rotation}) scale(${markerIconScale})`}>
-            <path d={AIRCRAFT_MARKER_PATH} className="map-marker-plane" />
-          </g>
-        )}
-        <title>{marker.title}</title>
-      </g>
-    </g>
-  ))
-})
+  const projectedPath = path
+    .map((point) => {
+      if (!Number.isFinite(Number(point?.lat)) || !Number.isFinite(Number(point?.lon))) {
+        return null
+      }
+
+      return geogLonLatToEqualEarthMercatorLonLat([Number(point.lon), Number(point.lat)])
+    })
+    .filter(Boolean)
+
+  if (!projectedPath.some((point) => point === projectedCoordinate)) {
+    projectedPath.push(projectedCoordinate)
+  }
+
+  for (let index = projectedPath.length - 1; index > 0; index -= 1) {
+    const currentPoint = projectedPath[index]
+    const previousPoint = projectedPath[index - 1]
+    let deltaX = currentPoint[0] - previousPoint[0]
+    if (deltaX > 180) {
+      deltaX -= 360
+    } else if (deltaX < -180) {
+      deltaX += 360
+    }
+
+    const deltaY = currentPoint[1] - previousPoint[1]
+    if (Math.hypot(deltaX, deltaY) < 0.000001) {
+      continue
+    }
+
+    return normalizeDegrees((Math.atan2(deltaX, deltaY) * 180) / Math.PI)
+  }
+
+  const track = normalizeDegrees(Number(plane?.track))
+  if (track == null) {
+    return 0
+  }
+
+  const lon = Number(plane?.lon)
+  const lat = Number(plane?.lat)
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    return track
+  }
+
+  const nextProjectedCoordinate = geogLonLatToEqualEarthMercatorLonLat(getDestinationLonLat(lon, lat, track))
+  if (!nextProjectedCoordinate) {
+    return track
+  }
+
+  let deltaX = nextProjectedCoordinate[0] - projectedCoordinate[0]
+  if (deltaX > 180) {
+    deltaX -= 360
+  } else if (deltaX < -180) {
+    deltaX += 360
+  }
+
+  const deltaY = nextProjectedCoordinate[1] - projectedCoordinate[1]
+  return Math.hypot(deltaX, deltaY) < 0.000001
+    ? track
+    : normalizeDegrees((Math.atan2(deltaX, deltaY) * 180) / Math.PI)
+}
+
+function createEqualEarthLineFeature(id, coordinates) {
+  return {
+    type: 'Feature',
+    properties: { id },
+    geometry: {
+      type: 'LineString',
+      coordinates: coordinates
+        .map(geogLonLatToEqualEarthMercatorLonLat)
+        .filter(Boolean),
+    },
+  }
+}
+
+function createEqualEarthPolygonFeature(id, rings, properties = {}) {
+  return {
+    type: 'Feature',
+    properties: { id, ...properties },
+    geometry: {
+      type: 'Polygon',
+      coordinates: rings.map((ring) =>
+        ring
+          .map(geogLonLatToEqualEarthMercatorLonLat)
+          .filter(Boolean),
+      ),
+    },
+  }
+}
+
+function createEqualEarthGraticule() {
+  const features = []
+  for (let lon = -170; lon <= 170; lon += 10) {
+    const coordinates = []
+    for (let lat = -90; lat <= 90; lat += 1) {
+      coordinates.push([lon, lat])
+    }
+    features.push(createEqualEarthLineFeature(`meridian-${lon}`, coordinates))
+  }
+
+  for (let lat = -80; lat <= 80; lat += 10) {
+    const coordinates = []
+    for (let lon = -180; lon <= 180; lon += 1) {
+      coordinates.push([lon, lat])
+    }
+    features.push(createEqualEarthLineFeature(`parallel-${lat}`, coordinates))
+  }
+
+  return { type: 'FeatureCollection', features }
+}
+
+function createEqualEarthSphere() {
+  const leftEdge = []
+  const rightEdge = []
+  for (let lat = -90; lat <= 90; lat += 2) {
+    leftEdge.push(geogLonLatToEqualEarthMercatorLonLat([-180, lat]))
+  }
+  for (let lat = 90; lat >= -90; lat -= 2) {
+    rightEdge.push(geogLonLatToEqualEarthMercatorLonLat([180, lat]))
+  }
+
+  const ring = [...leftEdge, ...rightEdge].filter(Boolean)
+  ring.push(ring[0])
+
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'Polygon',
+          coordinates: [ring],
+        },
+      },
+    ],
+  }
+}
+
+function createWesternSaharaFeatureCollection() {
+  return {
+    type: 'FeatureCollection',
+    features: [
+      createEqualEarthPolygonFeature('western-sahara', WESTERN_SAHARA_GEOGRAPHIC_POLYGON, { adm0_a3: 'SAH' }),
+    ],
+  }
+}
+
+const MAPLIBRE_GRATICULE_FEATURE_COLLECTION = createEqualEarthGraticule()
+const MAPLIBRE_SPHERE_FEATURE_COLLECTION = createEqualEarthSphere()
+const MAPLIBRE_WESTERN_SAHARA_FEATURE_COLLECTION = createWesternSaharaFeatureCollection()
+
+function createMapLibreEqualEarthStyle() {
+  return {
+    version: 8,
+    sources: {
+      'equal-earth-sphere': {
+        type: 'geojson',
+        data: MAPLIBRE_SPHERE_FEATURE_COLLECTION,
+      },
+      'equal-earth-graticule': {
+        type: 'geojson',
+        data: MAPLIBRE_GRATICULE_FEATURE_COLLECTION,
+      },
+      'equal-earth-western-sahara': {
+        type: 'geojson',
+        data: MAPLIBRE_WESTERN_SAHARA_FEATURE_COLLECTION,
+      },
+      countries: {
+        type: 'vector',
+        url: 'https://assets.bbox.earth/tiles/ne_extracts_8857/ne_countries.json',
+      },
+    },
+    layers: [
+      {
+        id: 'background',
+        type: 'background',
+        paint: {
+          'background-color': '#ffffff',
+        },
+      },
+      {
+        id: 'equal-earth-sphere-fill',
+        type: 'fill',
+        source: 'equal-earth-sphere',
+        paint: {
+          'fill-color': '#fafafa',
+          'fill-outline-color': '#999999',
+        },
+      },
+      {
+        id: 'equal-earth-graticule',
+        type: 'line',
+        source: 'equal-earth-graticule',
+        paint: {
+          'line-color': '#d9d9d9',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.55, 4, 1],
+          'line-opacity': 0.95,
+        },
+      },
+      {
+        id: 'equal-earth-country-fill',
+        type: 'fill',
+        source: 'countries',
+        'source-layer': 'country',
+        paint: {
+          'fill-color': '#f2f2f2',
+        },
+      },
+      {
+        id: 'equal-earth-western-sahara-fill',
+        type: 'fill',
+        source: 'equal-earth-western-sahara',
+        maxzoom: MAPLIBRE_WESTERN_SAHARA_LAYER_MAX_ZOOM,
+        paint: {
+          'fill-color': '#f2f2f2',
+        },
+      },
+      {
+        id: 'equal-earth-antarctica-fill',
+        type: 'fill',
+        source: 'countries',
+        'source-layer': 'country',
+        filter: ['in', 'adm0_a3', 'ATA'],
+        paint: {
+          'fill-color': '#f2f2f2',
+        },
+      },
+      {
+        id: 'equal-earth-country-outline',
+        type: 'line',
+        source: 'countries',
+        'source-layer': 'country',
+        layout: {
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': '#b6b6b6',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.38, 4, 0.78],
+          'line-opacity': 0.84,
+        },
+      },
+      {
+        id: 'equal-earth-western-sahara-outline',
+        type: 'line',
+        source: 'equal-earth-western-sahara',
+        maxzoom: MAPLIBRE_WESTERN_SAHARA_LAYER_MAX_ZOOM,
+        layout: {
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': '#b6b6b6',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.38, 4, 0.78],
+          'line-opacity': 0.84,
+        },
+      },
+      {
+        id: 'equal-earth-country-border',
+        type: 'line',
+        source: 'countries',
+        'source-layer': 'land-border-country',
+        paint: {
+          'line-color': '#c6c6c6',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.25, 4, 0.58],
+          'line-opacity': 0.62,
+        },
+      },
+      {
+        id: 'equal-earth-sphere-outline',
+        type: 'line',
+        source: 'equal-earth-sphere',
+        paint: {
+          'line-color': '#999999',
+          'line-width': 1,
+        },
+      },
+    ],
+  }
+}
+
+function createMapLibreAircraftSvg(fill, stroke = '#ffffff') {
+  return `
+    <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="-12 -12 24 24">
+      <path d="${AIRCRAFT_MARKER_PATH}" fill="${fill}" stroke="${stroke}" stroke-width="0.68" stroke-linejoin="round"/>
+    </svg>
+  `
+}
+
+function createMapLibreDotSvg(fill, stroke = '#ffffff') {
+  return `
+    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="-12 -12 24 24">
+      <circle cx="0" cy="0" r="5.2" fill="${fill}" stroke="${stroke}" stroke-width="1"/>
+    </svg>
+  `
+}
+
+function addMapLibreSvgImage(map, id, svg, pixelRatio = 4) {
+  if (map.hasImage(id)) {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      if (!map.hasImage(id)) {
+        map.addImage(id, image, { pixelRatio })
+      }
+      resolve()
+    }
+    image.onerror = reject
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  })
+}
+
+function addMapLibreAircraftImages(map) {
+  return Promise.all([
+    addMapLibreSvgImage(map, 'aircraft-business', createMapLibreAircraftSvg('#0000ee')),
+    addMapLibreSvgImage(map, 'aircraft-military', createMapLibreAircraftSvg('#000000')),
+    addMapLibreSvgImage(map, 'aircraft-active', createMapLibreAircraftSvg('#cc0000', '#ffffff')),
+    addMapLibreSvgImage(map, 'aircraft-untracked', createMapLibreDotSvg('#0000ee')),
+  ])
+}
+
+function getMapLibrePlaneMarkerId(plane, index = 0) {
+  return String(plane?.markerId || plane?.hex || plane?.registration || `aircraft-${index}`)
+}
+
+function createEmptyAircraftFeatureCollection() {
+  return { type: 'FeatureCollection', features: [] }
+}
+
+function fitMapLibreWorld(
+  map,
+  minZoomRef,
+  setMapZoom,
+  setMapMinZoom,
+  { preserveZoom = false, initialBounds = MAPLIBRE_WORLD_BOUNDS } = {},
+) {
+  const previousZoom = map.getZoom()
+  const previousCenter = map.getCenter()
+  const wasAtMinimumZoom = previousZoom <= minZoomRef.current + MAPLIBRE_ZOOM_EPSILON
+
+  map.fitBounds(MAPLIBRE_WORLD_BOUNDS, {
+    padding: MAPLIBRE_WORLD_FIT_PADDING,
+    duration: 0,
+  })
+
+  const minZoom = map.getZoom()
+  const maxZoom = minZoom + MAPLIBRE_MAX_ZOOM_DELTA
+  minZoomRef.current = minZoom
+  map.setMinZoom(minZoom)
+  map.setMaxZoom(maxZoom)
+
+  if (preserveZoom && !wasAtMinimumZoom) {
+    map.jumpTo({
+      center: previousCenter,
+      zoom: clamp(previousZoom, minZoom, maxZoom),
+    })
+  } else if (initialBounds === MAPLIBRE_WORLD_BOUNDS) {
+    map.jumpTo({ center: [0, 0], zoom: minZoom })
+  } else {
+    map.fitBounds(initialBounds, {
+      padding: MAPLIBRE_WORLD_FIT_PADDING,
+      duration: 0,
+    })
+  }
+
+  setMapMinZoom(minZoom)
+  setMapZoom(map.getZoom())
+}
+
+function enforceMapLibreBounds(map, minZoom, clampingRef) {
+  if (clampingRef.current) {
+    return
+  }
+
+  const bounds = map.getBounds()
+  const center = map.getCenter()
+  const [[west, south], [east, north]] = MAPLIBRE_WORLD_BOUNDS
+  const visibleWest = bounds.getWest()
+  const visibleEast = bounds.getEast()
+  const visibleSouth = bounds.getSouth()
+  const visibleNorth = bounds.getNorth()
+  const visibleLngSpan = visibleEast - visibleWest
+  const visibleLatSpan = visibleNorth - visibleSouth
+  let nextLng = center.lng
+  let nextLat = center.lat
+
+  if (map.getZoom() <= minZoom + MAPLIBRE_ZOOM_EPSILON) {
+    nextLng = 0
+    nextLat = 0
+  } else {
+    if (visibleLngSpan >= east - west) {
+      nextLng = 0
+    } else {
+      if (visibleWest < west) {
+        nextLng += west - visibleWest
+      }
+      if (visibleEast > east) {
+        nextLng += east - visibleEast
+      }
+    }
+
+    if (visibleLatSpan >= north - south) {
+      nextLat = 0
+    } else {
+      if (visibleSouth < south) {
+        nextLat += south - visibleSouth
+      }
+      if (visibleNorth > north) {
+        nextLat += north - visibleNorth
+      }
+    }
+  }
+
+  nextLng = clamp(nextLng, west, east)
+  nextLat = clamp(nextLat, south, north)
+  if (Math.abs(nextLng - center.lng) <= 0.000001 && Math.abs(nextLat - center.lat) <= 0.000001) {
+    return
+  }
+
+  clampingRef.current = true
+  map.jumpTo({ center: [nextLng, nextLat] })
+  clampingRef.current = false
+}
 
 function hasValidMapPosition(plane) {
   const lat = Number(plane?.lat)
@@ -2237,276 +2666,249 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
   const isNarrowLayout = useIsNarrowLayout()
   const [selectedMarkerId, setSelectedMarkerId] = useState(null)
   const [hoveredMarkerId, setHoveredMarkerId] = useState(null)
-  const [mapTransform, setMapTransform] = useState(() => constrainMapTransform({
-    scale: 1,
-    translateX: 0,
-    translateY: 0,
-  }))
-  const svgRef = useRef(null)
-  const panStateRef = useRef(null)
-  const projection = useMemo(
-    () => (isNarrowLayout ? createUnitedStatesProjection() : createWorldProjection()),
-    [isNarrowLayout],
+  const [mapZoom, setMapZoom] = useState(0)
+  const [mapMinZoom, setMapMinZoom] = useState(0)
+  const [mapError, setMapError] = useState(null)
+  const mapContainerRef = useRef(null)
+  const mapRef = useRef(null)
+  const minZoomRef = useRef(0)
+  const clampingRef = useRef(false)
+  const aircraftFeatureCollectionRef = useRef(createEmptyAircraftFeatureCollection())
+  const displayedMarkerId = hoveredMarkerId || selectedMarkerId
+  const aircraftByMarkerId = useMemo(() => {
+    const byMarkerId = new Map()
+    aircraft.forEach((plane, index) => {
+      byMarkerId.set(getMapLibrePlaneMarkerId(plane, index), plane)
+    })
+    return byMarkerId
+  }, [aircraft])
+  const displayedPlane = useMemo(
+    () => aircraftByMarkerId.get(displayedMarkerId) ?? null,
+    [displayedMarkerId, aircraftByMarkerId],
   )
-  const mapPath = useMemo(() => geoPath(projection), [projection])
-  const graticulePath = useMemo(() => mapPath(geoGraticule10()), [mapPath])
-  const geographyPaths = useMemo(
-    () =>
-      worldGeographies.map((geo) => ({
-        key: geo.id || geo.properties?.name,
-        path: mapPath(geo),
-      })),
-    [mapPath],
-  )
-  const projectedAircraft = useMemo(
-    () =>
-      aircraft
+  const aircraftFeatureCollection = useMemo(() => {
+    const activeMarkerId = hoveredMarkerId || selectedMarkerId
+    return {
+      type: 'FeatureCollection',
+      features: aircraft
         .filter(hasValidMapPosition)
-        .map((plane) => {
-          const point = projection([plane.lon, plane.lat])
-          if (!point || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+        .map((plane, index) => {
+          const markerId = getMapLibrePlaneMarkerId(plane, index)
+          const coordinate = geogLonLatToEqualEarthMercatorLonLat([Number(plane.lon), Number(plane.lat)])
+          if (!coordinate) {
             return null
           }
 
+          const cohortKind = plane.cohortKind || 'business'
+          const active = markerId === activeMarkerId
+          const icon =
+            active ? 'aircraft-active'
+              : cohortKind === 'military' ? 'aircraft-military'
+                : cohortKind === 'untracked' ? 'aircraft-untracked'
+                  : 'aircraft-business'
+
           return {
-            id: plane.markerId || plane.hex,
-            hex: plane.hex,
-            cohortKind: plane.cohortKind || 'business',
-            shape: plane.cohortKind === 'untracked' ? 'circle' : 'airplane',
-            x: point[0],
-            y: point[1],
-            rotation: getProjectedAircraftRotation(plane, projection) ?? 0,
-            title: `${plane.label} · ${formatAltitude(plane.altitudeFt)} · ${formatSpeed(plane.groundSpeedKt)}`,
-            ariaLabel: `${plane.label || plane.registration || plane.hex?.toUpperCase()} at ${formatAltitude(plane.altitudeFt)}, ${formatSpeed(plane.groundSpeedKt)}`,
+            type: 'Feature',
+            id: markerId,
+            properties: {
+              markerId,
+              cohortKind,
+              icon,
+              active,
+              rotation: cohortKind === 'untracked' ? 0 : getProjectedAircraftRotation(plane, coordinate),
+              sortKey: active ? 10 : cohortKind === 'military' ? 6 : cohortKind === 'untracked' ? 4 : 2,
+            },
+            geometry: {
+              type: 'Point',
+              coordinates: coordinate,
+            },
           }
         })
         .filter(Boolean),
-    [aircraft, projection],
-  )
-  const displayedMarkerId = hoveredMarkerId || selectedMarkerId
-  const displayedPlane = useMemo(
-    () => aircraft.find((plane) => (plane.markerId || plane.hex) === displayedMarkerId) ?? null,
-    [displayedMarkerId, aircraft],
-  )
-  const markerHaloRadius = isNarrowLayout ? 18 : 12
-  const markerHitRadius = isNarrowLayout ? 30 : 16
-  const markerIconScale = isNarrowLayout ? 1.65 : 1
-  const mapTransformValue = `matrix(${mapTransform.scale} 0 0 ${mapTransform.scale} ${mapTransform.translateX} ${mapTransform.translateY})`
-  const markerCounterScale = 1 / mapTransform.scale
-  const canZoomIn = mapTransform.scale < MAP_MAX_ZOOM - MAP_ZOOM_EPSILON
-  const canZoomOut = mapTransform.scale > MAP_MIN_ZOOM + MAP_ZOOM_EPSILON
+    }
+  }, [aircraft, hoveredMarkerId, selectedMarkerId])
+  const canZoomIn = mapZoom < mapMinZoom + MAPLIBRE_MAX_ZOOM_DELTA - MAPLIBRE_ZOOM_EPSILON
+  const canZoomOut = mapZoom > mapMinZoom + MAPLIBRE_ZOOM_EPSILON
 
-  const selectPlane = useCallback((markerId) => {
-    setSelectedMarkerId(markerId)
-  }, [])
+  useEffect(() => {
+    aircraftFeatureCollectionRef.current = aircraftFeatureCollection
+    const source = mapRef.current?.getSource(MAPLIBRE_AIRCRAFT_SOURCE_ID)
+    source?.setData(aircraftFeatureCollection)
+  }, [aircraftFeatureCollection])
 
-  const showPlane = useCallback((markerId) => {
-    setHoveredMarkerId((currentMarkerId) => (currentMarkerId === markerId ? currentMarkerId : markerId))
-  }, [])
-
-  const hidePlane = useCallback((markerId) => {
-    setHoveredMarkerId((currentMarkerId) => (currentMarkerId === markerId ? null : currentMarkerId))
-  }, [])
-
-  function getSvgPoint(event) {
-    const svg = svgRef.current
-    const screenMatrix = svg?.getScreenCTM()
-    if (!svg || !screenMatrix) {
-      return null
+  useEffect(() => {
+    if (dataUnavailable || !mapContainerRef.current) {
+      return undefined
     }
 
-    const point = svg.createSVGPoint()
-    point.x = event.clientX
-    point.y = event.clientY
-    return point.matrixTransform(screenMatrix.inverse())
-  }
-
-  function getNearestMarkerId(point) {
-    if (!point || !projectedAircraft.length) {
-      return null
+    let cancelled = false
+    let map
+    try {
+      map = new maplibregl.Map({
+        container: mapContainerRef.current,
+        style: createMapLibreEqualEarthStyle(),
+        center: [0, 0],
+        zoom: 0,
+        attributionControl: false,
+        renderWorldCopies: false,
+        dragRotate: false,
+        pitchWithRotate: false,
+        maxPitch: 0,
+      })
+    } catch (error) {
+      console.error('Unable to initialize MapLibre map', error)
+      queueMicrotask(() => setMapError('MapLibre could not initialize WebGL in this browser.'))
+      return undefined
     }
 
-    const maxDistanceSq = markerHitRadius ** 2
-    let nearestMarkerId = null
-    let nearestDistanceSq = maxDistanceSq
+    mapRef.current = map
+    map.touchZoomRotate.disableRotation()
 
-    for (const marker of projectedAircraft) {
-      const viewportX = mapTransform.scale * marker.x + mapTransform.translateX
-      const viewportY = mapTransform.scale * marker.y + mapTransform.translateY
-      const distanceSq = (point.x - viewportX) ** 2 + (point.y - viewportY) ** 2
+    const updateZoomState = () => {
+      setMapZoom(map.getZoom())
+    }
+    const enforceBounds = () => {
+      enforceMapLibreBounds(map, minZoomRef.current, clampingRef)
+    }
 
-      if (distanceSq <= nearestDistanceSq) {
-        nearestDistanceSq = distanceSq
-        nearestMarkerId = marker.id
+    map.on('zoom', updateZoomState)
+    map.on('move', enforceBounds)
+    map.on('load', async () => {
+      try {
+        await addMapLibreAircraftImages(map)
+      } catch (error) {
+        console.error('Unable to add aircraft icons to MapLibre map', error)
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      map.addSource(MAPLIBRE_AIRCRAFT_SOURCE_ID, {
+        type: 'geojson',
+        data: aircraftFeatureCollectionRef.current,
+        promoteId: 'markerId',
+      })
+      map.addLayer({
+        id: MAPLIBRE_AIRCRAFT_HALO_LAYER_ID,
+        type: 'circle',
+        source: MAPLIBRE_AIRCRAFT_SOURCE_ID,
+        paint: {
+          'circle-color': '#cc0000',
+          'circle-radius': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0,
+            ['case', ['==', ['get', 'active'], true], 10, 0],
+            3,
+            ['case', ['==', ['get', 'active'], true], 18, 0],
+            5,
+            ['case', ['==', ['get', 'active'], true], 24, 0],
+          ],
+          'circle-opacity': [
+            'case',
+            ['==', ['get', 'active'], true],
+            0.12,
+            0,
+          ],
+          'circle-stroke-width': 0,
+        },
+      })
+      map.addLayer({
+        id: MAPLIBRE_AIRCRAFT_ICON_LAYER_ID,
+        type: 'symbol',
+        source: MAPLIBRE_AIRCRAFT_SOURCE_ID,
+        layout: {
+          'icon-image': ['get', 'icon'],
+          'icon-size': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0,
+            ['case', ['==', ['get', 'active'], true], 1.36, 1.1],
+            3,
+            ['case', ['==', ['get', 'active'], true], 1.89, 1.58],
+            5,
+            ['case', ['==', ['get', 'active'], true], 2.42, 2.02],
+          ],
+          'icon-rotate': ['get', 'rotation'],
+          'icon-rotation-alignment': 'map',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'symbol-sort-key': ['get', 'sortKey'],
+        },
+        paint: {
+          'icon-opacity': 0.96,
+        },
+      })
+
+      fitMapLibreWorld(map, minZoomRef, setMapZoom, setMapMinZoom, {
+        initialBounds: isNarrowLayout ? MAPLIBRE_CONUS_BOUNDS : MAPLIBRE_WORLD_BOUNDS,
+      })
+
+      map.on('mousemove', MAPLIBRE_AIRCRAFT_ICON_LAYER_ID, (event) => {
+        const markerId = event.features?.[0]?.properties?.markerId
+        map.getCanvas().style.cursor = markerId ? 'pointer' : ''
+        setHoveredMarkerId((currentMarkerId) => (currentMarkerId === markerId ? currentMarkerId : markerId || null))
+      })
+      map.on('mouseleave', MAPLIBRE_AIRCRAFT_ICON_LAYER_ID, () => {
+        map.getCanvas().style.cursor = ''
+        setHoveredMarkerId(null)
+      })
+      map.on('click', MAPLIBRE_AIRCRAFT_ICON_LAYER_ID, (event) => {
+        const markerId = event.features?.[0]?.properties?.markerId
+        if (markerId) {
+          setSelectedMarkerId(markerId)
+        }
+      })
+      map.on('click', (event) => {
+        const features = map.queryRenderedFeatures(event.point, {
+          layers: [MAPLIBRE_AIRCRAFT_ICON_LAYER_ID],
+        })
+        if (!features.length) {
+          setSelectedMarkerId(null)
+        }
+      })
+    })
+
+    const resizeObserver = new ResizeObserver(() => {
+      window.requestAnimationFrame(() => {
+        if (cancelled) {
+          return
+        }
+        map.resize()
+        fitMapLibreWorld(map, minZoomRef, setMapZoom, setMapMinZoom, { preserveZoom: true })
+        enforceMapLibreBounds(map, minZoomRef.current, clampingRef)
+      })
+    })
+    resizeObserver.observe(mapContainerRef.current)
+
+    return () => {
+      cancelled = true
+      resizeObserver.disconnect()
+      map.remove()
+      if (mapRef.current === map) {
+        mapRef.current = null
       }
     }
+  }, [dataUnavailable, isNarrowLayout])
 
-    return nearestMarkerId
-  }
-
-  function updateHoveredMarkerFromEvent(event) {
-    if (isNarrowLayout) {
+  function zoomMap(delta) {
+    const map = mapRef.current
+    if (!map) {
       return
     }
 
-    const point = getSvgPoint(event)
-    const nearestMarkerId = getNearestMarkerId(point)
-    setHoveredMarkerId((currentMarkerId) => (
-      currentMarkerId === nearestMarkerId ? currentMarkerId : nearestMarkerId
-    ))
-  }
-
-  function getVisibleAircraftCentroid() {
-    const visiblePoints = []
-
-    for (const marker of projectedAircraft) {
-      const viewportX = mapTransform.scale * marker.x + mapTransform.translateX
-      const viewportY = mapTransform.scale * marker.y + mapTransform.translateY
-
-      if (viewportX < 0 || viewportX > MAP_WIDTH || viewportY < 0 || viewportY > MAP_HEIGHT) {
-        continue
-      }
-
-      visiblePoints.push(marker)
-    }
-
-    if (!visiblePoints.length) {
-      return null
-    }
-
-    return {
-      x: visiblePoints.reduce((total, point) => total + point.x, 0) / visiblePoints.length,
-      y: visiblePoints.reduce((total, point) => total + point.y, 0) / visiblePoints.length,
-    }
-  }
-
-  function zoomMap(factor) {
-    setMapTransform((currentTransform) => {
-      const nextScale = clamp(currentTransform.scale * factor, MAP_MIN_ZOOM, MAP_MAX_ZOOM)
-      const scaleRatio = nextScale / currentTransform.scale
-      const centerX = MAP_WIDTH / 2
-      const centerY = MAP_HEIGHT / 2
-
-      return constrainMapTransform({
-        scale: nextScale,
-        translateX: centerX - scaleRatio * (centerX - currentTransform.translateX),
-        translateY: centerY - scaleRatio * (centerY - currentTransform.translateY),
-      })
-    })
-  }
-
-  function zoomToVisibleAircraftCentroid(factor) {
-    const centroid = getVisibleAircraftCentroid()
-    if (!centroid) {
-      zoomMap(factor)
-      return
-    }
-
-    setMapTransform((currentTransform) => {
-      const nextScale = clamp(currentTransform.scale * factor, MAP_MIN_ZOOM, MAP_MAX_ZOOM)
-
-      return constrainMapTransform({
-        scale: nextScale,
-        translateX: MAP_WIDTH / 2 - nextScale * centroid.x,
-        translateY: MAP_HEIGHT / 2 - nextScale * centroid.y,
-      })
-    })
-  }
-
-  function panMap(deltaX, deltaY) {
-    setMapTransform((currentTransform) =>
-      constrainMapTransform({
-        ...currentTransform,
-        translateX: currentTransform.translateX + deltaX,
-        translateY: currentTransform.translateY + deltaY,
-      }),
+    const nextZoom = clamp(
+      map.getZoom() + delta,
+      minZoomRef.current,
+      minZoomRef.current + MAPLIBRE_MAX_ZOOM_DELTA,
     )
-  }
-
-  function handleMapPointerDown(event) {
-    if (event.pointerType === 'mouse' && event.button !== 0) {
-      return
-    }
-
-    event.preventDefault()
-    clearCurrentTextSelection()
-
-    const point = getSvgPoint(event)
-    if (!point) {
-      return
-    }
-
-    const markerElement = event.target.closest?.('.map-marker')
-
-    panStateRef.current = {
-      pointerId: event.pointerId,
-      lastX: point.x,
-      lastY: point.y,
-      moved: false,
-      markerId: markerElement?.dataset?.markerId || null,
-    }
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-  }
-
-  function handleMapPointerMove(event) {
-    const panState = panStateRef.current
-    if (!panState || panState.pointerId !== event.pointerId) {
-      updateHoveredMarkerFromEvent(event)
-      return
-    }
-
-    const point = getSvgPoint(event)
-    if (!point) {
-      return
-    }
-
-    event.preventDefault()
-
-    const deltaX = point.x - panState.lastX
-    const deltaY = point.y - panState.lastY
-    panState.lastX = point.x
-    panState.lastY = point.y
-
-    if (Math.abs(deltaX) > 0.25 || Math.abs(deltaY) > 0.25) {
-      panState.moved = true
-      clearCurrentTextSelection()
-    }
-
-    panMap(deltaX, deltaY)
-  }
-
-  function handleMapPointerUp(event) {
-    const panState = panStateRef.current
-    if (!panState || panState.pointerId !== event.pointerId) {
-      return
-    }
-
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
-    panStateRef.current = null
-    clearCurrentTextSelection()
-
-    if (!panState.moved && panState.markerId) {
-      selectPlane(panState.markerId)
-    }
-  }
-
-  function handleMapPointerCancel(event) {
-    const panState = panStateRef.current
-    if (!panState || panState.pointerId !== event.pointerId) {
-      return
-    }
-
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
-    panStateRef.current = null
-    clearCurrentTextSelection()
-  }
-
-  function handleMapPointerLeave() {
-    if (panStateRef.current) {
-      return
-    }
-
-    setHoveredMarkerId(null)
+    map.easeTo({
+      zoom: nextZoom,
+      duration: 180,
+    })
   }
 
   return (
@@ -2516,91 +2918,69 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
       </div>
 
       <div className="map-frame">
-        {dataUnavailable ? (
+        {dataUnavailable || mapError ? (
           <div className="map-unavailable-state">
-            <strong>ADSB Data Unavailable</strong>
+            <strong>{mapError ? 'Map Unavailable' : 'ADSB Data Unavailable'}</strong>
             <span>
-              ADS-B Exchange has not delivered a fresh heatmap recently, so live aircraft positions are paused.
-              {liveStatus?.latestSampledAt ? ` Last cached sample: ${formatTimestamp(liveStatus.latestSampledAt)}.` : ''}
+              {mapError || (
+                <>
+                  ADS-B Exchange has not delivered a fresh heatmap recently, so live aircraft positions are paused.
+                  {liveStatus?.latestSampledAt ? ` Last cached sample: ${formatTimestamp(liveStatus.latestSampledAt)}.` : ''}
+                </>
+              )}
             </span>
           </div>
         ) : (
           <>
-        <div className="map-controls" aria-label="Map controls">
-          <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomToVisibleAircraftCentroid(MAP_ZOOM_STEP)} aria-label="Zoom in" disabled={!canZoomIn}>
-            <span className="map-zoom-icon map-zoom-plus" aria-hidden="true" />
-          </button>
-          <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomMap(1 / MAP_ZOOM_STEP)} aria-label="Zoom out" disabled={!canZoomOut}>
-            <span className="map-zoom-icon map-zoom-minus" aria-hidden="true" />
-          </button>
-        </div>
-        {displayedPlane ? (
-          <div className="map-hover-card map-hover-card-active">
-            <>
-              <div className="map-hover-header">
-                <strong>{displayedPlane.label || displayedPlane.registration || displayedPlane.hex?.toUpperCase()}</strong>
-                <span>{displayedPlane.registration || displayedPlane.hex?.toUpperCase() || 'Unknown aircraft'}</span>
+            <div className="map-controls" aria-label="Map controls">
+              <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomMap(MAPLIBRE_ZOOM_STEP)} aria-label="Zoom in" disabled={!canZoomIn}>
+                <span className="map-zoom-icon map-zoom-plus" aria-hidden="true" />
+              </button>
+              <button type="button" className="map-control-button map-zoom-button" onClick={() => zoomMap(-MAPLIBRE_ZOOM_STEP)} aria-label="Zoom out" disabled={!canZoomOut}>
+                <span className="map-zoom-icon map-zoom-minus" aria-hidden="true" />
+              </button>
+            </div>
+            {displayedPlane ? (
+              <div className="map-hover-card map-hover-card-active">
+                <>
+                  <div className="map-hover-header">
+                    <strong>{displayedPlane.label || displayedPlane.registration || displayedPlane.hex?.toUpperCase()}</strong>
+                    <span>{displayedPlane.registration || displayedPlane.hex?.toUpperCase() || 'Unknown aircraft'}</span>
+                  </div>
+                  <dl className="map-hover-grid">
+                    <div>
+                      <dt>Last seen</dt>
+                      <dd>{formatTimestamp(displayedPlane.observed_at)}</dd>
+                    </div>
+                    <div>
+                      <dt>Altitude</dt>
+                      <dd>{formatAltitude(displayedPlane.altitudeFt)}</dd>
+                    </div>
+                    <div>
+                      <dt>Speed</dt>
+                      <dd>{formatSpeed(displayedPlane.groundSpeedKt)}</dd>
+                    </div>
+                    <div className="map-hover-coordinates">
+                      <dt>Coordinates</dt>
+                      <dd>{formatCoordinates(displayedPlane.lat, displayedPlane.lon)}</dd>
+                    </div>
+                  </dl>
+                </>
               </div>
-              <dl className="map-hover-grid">
-                <div>
-                  <dt>Last seen</dt>
-                  <dd>{formatTimestamp(displayedPlane.observed_at)}</dd>
-                </div>
-                <div>
-                  <dt>Altitude</dt>
-                  <dd>{formatAltitude(displayedPlane.altitudeFt)}</dd>
-                </div>
-                <div>
-                  <dt>Speed</dt>
-                  <dd>{formatSpeed(displayedPlane.groundSpeedKt)}</dd>
-                </div>
-                <div className="map-hover-coordinates">
-                  <dt>Coordinates</dt>
-                  <dd>{formatCoordinates(displayedPlane.lat, displayedPlane.lon)}</dd>
-                </div>
-              </dl>
-            </>
-          </div>
-        ) : null}
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
-          className={`map-svg${isNarrowLayout ? ' map-svg-narrow' : ''}`}
-          draggable={false}
-          role="img"
-          aria-label="Current aircraft positions"
-          onPointerDown={handleMapPointerDown}
-          onPointerMove={handleMapPointerMove}
-          onPointerUp={handleMapPointerUp}
-          onPointerCancel={handleMapPointerCancel}
-          onPointerLeave={handleMapPointerLeave}
-        >
-          <g className="map-viewport" transform={mapTransformValue}>
-            <MapBaseLayer
-              geographyPaths={geographyPaths}
-              graticulePath={graticulePath}
-              isNarrowLayout={isNarrowLayout}
+            ) : null}
+            <div
+              ref={mapContainerRef}
+              className="maplibre-map"
+              role="img"
+              aria-label="Current aircraft positions"
             />
-            <MapMarkerLayer
-              isNarrowLayout={isNarrowLayout}
-              markerCounterScale={markerCounterScale}
-              markerHaloRadius={markerHaloRadius}
-              markerHitRadius={markerHitRadius}
-              markerIconScale={markerIconScale}
-              markers={projectedAircraft}
-              onMarkerActivate={selectPlane}
-              onMarkerHoverEnd={hidePlane}
-              onMarkerHoverStart={showPlane}
-              selectedMarkerId={selectedMarkerId}
-            />
-          </g>
-        </svg>
           </>
         )}
       </div>
     </section>
   )
 }
+
 
 function ExternalLinkIcon() {
   return (
@@ -2958,11 +3338,91 @@ function useInitialLoaderDismissed() {
   }, [])
 }
 
+function formatAdminValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return 'null'
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'yes' : 'no'
+  }
+
+  return String(value)
+}
+
+function getSubscriberSummary(subscribers) {
+  return subscribers.reduce(
+    (summary, subscriber) => {
+      summary.total += 1
+      summary[subscriber.status] = (summary[subscriber.status] || 0) + 1
+      if (subscriber.wantsEmail) {
+        summary.wantsEmail += 1
+      }
+      if (subscriber.wantsSms) {
+        summary.wantsSms += 1
+      }
+      if (subscriber.wantsEmail && subscriber.wantsSms) {
+        summary.wantsBoth += 1
+      }
+      return summary
+    },
+    {
+      total: 0,
+      active: 0,
+      pending_checkout: 0,
+      past_due: 0,
+      canceled: 0,
+      wantsEmail: 0,
+      wantsSms: 0,
+      wantsBoth: 0,
+    },
+  )
+}
+
+function getSubscriberFields(subscriber) {
+  return [
+    ['id', subscriber.id],
+    ['status', subscriber.status],
+    ['email', subscriber.email],
+    ['emailHash', subscriber.emailHash],
+    ['phone', subscriber.phone],
+    ['phoneHash', subscriber.phoneHash],
+    ['wantsEmail', subscriber.wantsEmail],
+    ['wantsSms', subscriber.wantsSms],
+    ['smsConsentAt', subscriber.smsConsentAt],
+    ['smsConsentIpHash', subscriber.smsConsentIpHash],
+    ['smsConsentUserAgentHash', subscriber.smsConsentUserAgentHash],
+    ['stripeCustomerId', subscriber.stripeCustomerId],
+    ['stripeSubscriptionId', subscriber.stripeSubscriptionId],
+    ['stripeCheckoutSessionId', subscriber.stripeCheckoutSessionId],
+    ['stripeProductId', subscriber.stripeProductId],
+    ['stripePriceId', subscriber.stripePriceId],
+    ['checkoutUrl', subscriber.checkoutUrl],
+    ['checkoutCreatedAt', subscriber.checkoutCreatedAt],
+    ['checkoutCompletedAt', subscriber.checkoutCompletedAt],
+    ['currentPeriodEnd', subscriber.currentPeriodEnd],
+    ['canceledAt', subscriber.canceledAt],
+    ['contactRedactedAt', subscriber.contactRedactedAt],
+    ['createdAt', subscriber.createdAt],
+    ['updatedAt', subscriber.updatedAt],
+    ['hasEmailCipher', subscriber.hasEmailCipher],
+    ['hasPhoneCipher', subscriber.hasPhoneCipher],
+    ['deliveryCount', subscriber.deliveryCount],
+    ['emailDeliveryCount', subscriber.emailDeliveryCount],
+    ['smsDeliveryCount', subscriber.smsDeliveryCount],
+    ['deliveryErrorCount', subscriber.deliveryErrorCount],
+    ['lastDeliveryAt', subscriber.lastDeliveryAt],
+  ]
+}
+
 function SignupPage() {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [smsConsent, setSmsConsent] = useState(false)
   const [status, setStatus] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [showSignupForm, setShowSignupForm] = useState(true)
+  const hasPhone = phone.trim().length > 0
 
   useInitialLoaderDismissed()
 
@@ -2970,12 +3430,34 @@ function SignupPage() {
     const previousTitle = document.title
     document.title = 'Apocalypse Notifications'
 
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('success') === '1') {
+      setShowSignupForm(false)
+      setStatus({
+        tone: 'success',
+        message:
+          'Payment received. Your notification subscription will activate as soon as Stripe confirms the checkout.',
+      })
+    } else if (params.get('canceled') === '1') {
+      setShowSignupForm(true)
+      setStatus({
+        tone: 'error',
+        message: 'Checkout was canceled. Your contact info was saved as pending, but alerts are not active yet.',
+      })
+    }
+
+    const handlePageShow = () => {
+      setSubmitting(false)
+    }
+    window.addEventListener('pageshow', handlePageShow)
+
     return () => {
       document.title = previousTitle
+      window.removeEventListener('pageshow', handlePageShow)
     }
   }, [])
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
 
     const normalizedEmail = email.trim()
@@ -2997,11 +3479,37 @@ function SignupPage() {
       return
     }
 
+    setSubmitting(true)
     setStatus({
       tone: 'success',
-      message:
-        'Placeholder received. The production signup endpoint is not live yet, so this preview did not store or send anything.',
+      message: 'Opening secure Stripe checkout...',
     })
+
+    try {
+      const response = await fetch('/api/signup/create-checkout-session', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          phone: normalizedPhone,
+          smsConsent,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.checkoutUrl) {
+        throw new Error(payload.error || 'Could not start checkout.')
+      }
+
+      window.location.assign(payload.checkoutUrl)
+    } catch (error) {
+      setSubmitting(false)
+      setStatus({
+        tone: 'error',
+        message: error.message,
+      })
+    }
   }
 
   return (
@@ -3011,24 +3519,24 @@ function SignupPage() {
         <section className="focus-grid signup-grid">
           <section className="panel hero-copy-panel signup-copy-panel">
             <h1>Apocalypse Notifications</h1>
+            <p className="signup-provider-notice">
+              Notifications are pending verification from SMS and email providers. We expect approval by 2026-05-14. If
+              you purchase a subscription now, it will be extended accordingly.
+            </p>
             <p className="hero-caption">
-              Get notified when the emergency level reaches 5. This preview shows the planned opt-in flow for SMS and
-              email alerts before Stripe payments and notification storage are connected.
+              Get notified when the emergency level reaches 5. Subscriptions are $5 per year and can send email, SMS,
+              or both.
             </p>
             <p>
-              The live subscription will cost $5 per year. No payment is collected here, and this placeholder does not
-              add you to a notification list yet.
+              <em>
+                Signup info may be temporarily stored for up to 24 hours to allow checkout to complete, then deleted if
+                unfinished. Contact info is only used for alerts and related account communication, never sold or used
+                for marketing. If you have questions about your subscription, please{' '}
+                <a href="mailto:ews@kylemcdonald.net">email me</a>.
+              </em>
             </p>
             <p className="hero-credit">
-              <a href="/">Dashboard</a>{' '}
-              /{' '}
-              <a href="https://t.me/apocalypse_ews" target="_blank" rel="noreferrer">
-                Telegram Notifications
-              </a>{' '}
-              /{' '}
-              <a href="https://ews.kylemcdonald.net/rss.xml" target="_blank" rel="noreferrer">
-                RSS
-              </a>
+              <a href="/">Back to Dashboard</a>
             </p>
           </section>
 
@@ -3038,58 +3546,425 @@ function SignupPage() {
                 <h2 id="signup-form-title">Notification Signup</h2>
               </div>
             </div>
-            <form className="signup-form" onSubmit={handleSubmit}>
-              <label className="signup-field">
-                <span>Email address</span>
-                <input
-                  type="email"
-                  name="email"
-                  value={email}
-                  autoComplete="email"
-                  placeholder="you@example.com"
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </label>
 
-              <label className="signup-field">
-                <span>Phone number</span>
-                <input
-                  type="tel"
-                  name="phone"
-                  value={phone}
-                  autoComplete="tel"
-                  inputMode="tel"
-                  placeholder="+1 555 123 4567"
-                  onChange={(event) => setPhone(event.target.value)}
-                />
-              </label>
+            {status ? (
+              <p className={`signup-status signup-status-${status.tone}`} role="status">
+                {status.message}
+              </p>
+            ) : null}
 
-              <label className="signup-consent">
-                <input
-                  type="checkbox"
-                  checked={smsConsent}
-                  onChange={(event) => setSmsConsent(event.target.checked)}
-                />
-                <span>
-                  I agree to receive automated SMS emergency alerts from Apocalypse Early Warning System at the phone
-                  number provided. Message frequency varies. Message and data rates may apply. Reply STOP to cancel or
-                  HELP for help.
-                </span>
-              </label>
+            {showSignupForm ? (
+              <form className="signup-form" onSubmit={handleSubmit}>
+                <label className="signup-field">
+                  <span>Email address</span>
+                  <input
+                    type="email"
+                    name="email"
+                    value={email}
+                    autoComplete="email"
+                    placeholder="you@example.com"
+                    onChange={(event) => setEmail(event.target.value)}
+                  />
+                </label>
 
-              <button className="signup-submit" type="submit">
-                Submit Signup
-              </button>
+                <label className="signup-field">
+                  <span>Phone number</span>
+                  <input
+                    type="tel"
+                    name="phone"
+                    value={phone}
+                    autoComplete="tel"
+                    inputMode="tel"
+                    placeholder="+1 555 123 4567"
+                    onChange={(event) => {
+                      const nextPhone = event.target.value
+                      setPhone(nextPhone)
+                      if (!nextPhone.trim()) setSmsConsent(false)
+                    }}
+                  />
+                </label>
 
-              {status ? (
-                <p className={`signup-status signup-status-${status.tone}`} role="status">
-                  {status.message}
-                </p>
-              ) : null}
-            </form>
+                {hasPhone ? (
+                  <label className="signup-consent">
+                    <input
+                      type="checkbox"
+                      checked={smsConsent}
+                      onChange={(event) => setSmsConsent(event.target.checked)}
+                    />
+                    <span>
+                      I agree to receive automated SMS emergency alerts from Apocalypse Early Warning System at the phone
+                      number provided. Message frequency varies. Message and data rates may apply. Reply STOP to cancel
+                      or HELP for help.
+                    </span>
+                  </label>
+                ) : null}
+
+                <button className="signup-submit" type="submit" disabled={submitting}>
+                  {submitting ? 'Opening Checkout...' : 'Sign Up'}
+                </button>
+              </form>
+            ) : (
+              <p className="signup-repeat">
+                To sign up for another subscription,{' '}
+                <button type="button" onClick={() => setShowSignupForm(true)}>
+                  click here
+                </button>
+                .
+              </p>
+            )}
           </section>
         </section>
 
+      </main>
+    </>
+  )
+}
+
+function AdminTestAlertPage() {
+  const adminView = window.location.pathname.replace(/\/+$/, '') === '/admin/subscribers' ? 'subscribers' : 'test'
+  const [mode, setMode] = useState('single')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [confirmAll, setConfirmAll] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [status, setStatus] = useState(null)
+  const [recentDeliveries, setRecentDeliveries] = useState([])
+  const [subscriberRecords, setSubscriberRecords] = useState([])
+  const [subscriberLoading, setSubscriberLoading] = useState(false)
+  const [subscriberStatus, setSubscriberStatus] = useState(null)
+  const subscriberSummary = useMemo(() => getSubscriberSummary(subscriberRecords), [subscriberRecords])
+
+  useInitialLoaderDismissed()
+
+  useEffect(() => {
+    const previousTitle = document.title
+    document.title = adminView === 'subscribers' ? 'Subscriber Database' : 'Test Emergency Alert'
+    if (adminView === 'subscribers') {
+      loadSubscriberRecords()
+    } else {
+      loadRecentDeliveries()
+    }
+
+    return () => {
+      document.title = previousTitle
+    }
+  }, [adminView])
+
+  async function loadRecentDeliveries() {
+    try {
+      const response = await fetch('/api/admin/test-alert?limit=20', { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (response.ok && Array.isArray(payload.deliveries)) {
+        setRecentDeliveries(payload.deliveries)
+      }
+    } catch {
+      // The admin page remains usable if the history panel cannot refresh.
+    }
+  }
+
+  async function loadSubscriberRecords() {
+    setSubscriberLoading(true)
+    setSubscriberStatus(null)
+    try {
+      const response = await fetch('/api/admin/test-alert?view=subscribers', { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !Array.isArray(payload.subscribers)) {
+        throw new Error(payload.error || 'Could not load subscriber database.')
+      }
+      setSubscriberRecords(payload.subscribers)
+    } catch (error) {
+      setSubscriberStatus({
+        tone: 'error',
+        message: error.message,
+      })
+    } finally {
+      setSubscriberLoading(false)
+    }
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+
+    if (mode === 'all' && !confirmAll) {
+      setStatus({
+        tone: 'error',
+        message: 'Confirm the all-subscriber test before sending.',
+      })
+      return
+    }
+
+    if (mode === 'single' && !email.trim() && !phone.trim()) {
+      setStatus({
+        tone: 'error',
+        message: 'Enter a test email address, phone number, or both.',
+      })
+      return
+    }
+
+    setSubmitting(true)
+    setStatus({
+      tone: 'success',
+      message: 'Sending test alert...',
+    })
+
+    try {
+      const response = await fetch('/api/admin/test-alert', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          mode,
+          email: email.trim(),
+          phone: phone.trim(),
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.error || 'Could not send test alert.')
+      }
+
+      setStatus({
+        tone: payload.ok ? 'success' : 'error',
+        message: `Alert ${payload.alertId} completed. Email accepted: ${payload.emailSentCount || 0}. SMS accepted: ${
+          payload.smsSentCount || 0
+        }. Errors: ${payload.errorCount || 0}.`,
+      })
+      loadRecentDeliveries()
+    } catch (error) {
+      setStatus({
+        tone: 'error',
+        message: error.message,
+      })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="background-wallpaper" style={{ backgroundImage: `url("${BACKGROUND_URL}")` }} aria-hidden="true" />
+      <main className="app-shell signup-shell">
+        <section className="focus-grid signup-grid">
+          <section className="panel hero-copy-panel signup-copy-panel">
+            <h1>Notification Admin</h1>
+            <p className="hero-caption">
+              Manage Access-protected notification testing and subscriber records.
+            </p>
+            <nav className="admin-tabs" aria-label="Notification admin views">
+              <a
+                className={adminView === 'test' ? 'admin-tab-active' : ''}
+                href="/admin"
+                aria-current={adminView === 'test' ? 'page' : undefined}
+              >
+                Test Alert
+              </a>
+              <a
+                className={adminView === 'subscribers' ? 'admin-tab-active' : ''}
+                href="/admin/subscribers"
+                aria-current={adminView === 'subscribers' ? 'page' : undefined}
+              >
+                Subscribers
+              </a>
+            </nav>
+            <p className="hero-credit">
+              <a href="/">Dashboard</a>{' '}
+              /{' '}
+              <a href="/signup">Notification Signup</a>
+            </p>
+          </section>
+
+          {adminView === 'test' ? (
+            <section className="panel signup-panel" aria-labelledby="admin-test-form-title">
+              <div className="panel-header">
+                <div>
+                  <h2 id="admin-test-form-title">Alert Test</h2>
+                </div>
+              </div>
+              <form className="signup-form" onSubmit={handleSubmit}>
+                <div className="mode-control" role="group" aria-label="Test mode">
+                  <button
+                    className={mode === 'single' ? 'mode-control-active' : ''}
+                    type="button"
+                    onClick={() => setMode('single')}
+                  >
+                    Single
+                  </button>
+                  <button
+                    className={mode === 'all' ? 'mode-control-active' : ''}
+                    type="button"
+                    onClick={() => setMode('all')}
+                  >
+                    All Active
+                  </button>
+                </div>
+
+                {mode === 'single' ? (
+                  <>
+                    <label className="signup-field">
+                      <span>Email address</span>
+                      <input
+                        type="email"
+                        name="email"
+                        value={email}
+                        autoComplete="email"
+                        placeholder="you@example.com"
+                        onChange={(event) => setEmail(event.target.value)}
+                      />
+                    </label>
+
+                    <label className="signup-field">
+                      <span>Phone number</span>
+                      <input
+                        type="tel"
+                        name="phone"
+                        value={phone}
+                        autoComplete="tel"
+                        inputMode="tel"
+                        placeholder="+1 555 123 4567"
+                        onChange={(event) => setPhone(event.target.value)}
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <label className="signup-consent">
+                    <input
+                      type="checkbox"
+                      checked={confirmAll}
+                      onChange={(event) => setConfirmAll(event.target.checked)}
+                    />
+                    <span>Send this test alert to every active paid subscriber.</span>
+                  </label>
+                )}
+
+                <button className="signup-submit" type="submit" disabled={submitting}>
+                  {submitting ? 'Sending...' : 'Send Test Alert'}
+                </button>
+
+                {status ? (
+                  <p className={`signup-status signup-status-${status.tone}`} role="status">
+                    {status.message}
+                  </p>
+                ) : null}
+              </form>
+
+              {recentDeliveries.length > 0 ? (
+                <div className="delivery-history" aria-label="Recent delivery status">
+                  <h3>Recent Delivery Status</h3>
+                  <div className="delivery-history-list">
+                    {recentDeliveries.map((delivery, index) => (
+                      <div
+                        className="delivery-history-row"
+                        key={`${delivery.alert_id}-${delivery.provider_message_id || index}`}
+                      >
+                        <div>
+                          <strong>{delivery.channel || delivery.kind}</strong>
+                          <span>{delivery.delivery_status || delivery.alert_status}</span>
+                        </div>
+                        <div>
+                          <span>{delivery.provider_message_id || delivery.alert_id}</span>
+                          {delivery.error ? <em>{delivery.error}</em> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : (
+            <section className="panel signup-panel admin-subscriber-panel admin-wide-panel" aria-labelledby="subscriber-table-title">
+              <div className="panel-header">
+                <div>
+                  <h2 id="subscriber-table-title">Subscriber Database</h2>
+                </div>
+                <button className="signup-submit" type="button" onClick={loadSubscriberRecords} disabled={subscriberLoading}>
+                  {subscriberLoading ? 'Loading...' : 'Refresh'}
+                </button>
+              </div>
+
+              {subscriberStatus ? (
+                <p className={`signup-status signup-status-${subscriberStatus.tone}`} role="status">
+                  {subscriberStatus.message}
+                </p>
+              ) : null}
+
+              <div className="admin-summary-grid" aria-label="Subscriber summary">
+                <span>Total: {subscriberSummary.total}</span>
+                <span>Active: {subscriberSummary.active}</span>
+                <span>Pending: {subscriberSummary.pending_checkout}</span>
+                <span>Past due: {subscriberSummary.past_due}</span>
+                <span>Canceled: {subscriberSummary.canceled}</span>
+                <span>Email: {subscriberSummary.wantsEmail}</span>
+                <span>SMS: {subscriberSummary.wantsSms}</span>
+                <span>Both: {subscriberSummary.wantsBoth}</span>
+              </div>
+
+              {subscriberRecords.length ? (
+                <div className="subscriber-table-wrap">
+                  <table className="subscriber-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Contact</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Stripe</th>
+                        <th scope="col">Dates</th>
+                        <th scope="col">Deliveries</th>
+                        <th scope="col">All Fields</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subscriberRecords.map((subscriber) => (
+                        <tr key={subscriber.id}>
+                          <td>
+                            <strong>{formatAdminValue(subscriber.email || subscriber.phone)}</strong>
+                            <span>{formatAdminValue(subscriber.email && subscriber.phone ? subscriber.phone : null)}</span>
+                            <span>{subscriber.id}</span>
+                          </td>
+                          <td>
+                            <strong>{formatAdminValue(subscriber.status)}</strong>
+                            <span>Email: {formatAdminValue(subscriber.wantsEmail)}</span>
+                            <span>SMS: {formatAdminValue(subscriber.wantsSms)}</span>
+                          </td>
+                          <td>
+                            <span>Customer: {formatAdminValue(subscriber.stripeCustomerId)}</span>
+                            <span>Subscription: {formatAdminValue(subscriber.stripeSubscriptionId)}</span>
+                            <span>Checkout: {formatAdminValue(subscriber.stripeCheckoutSessionId)}</span>
+                          </td>
+                          <td>
+                            <span>Created: {formatAdminValue(subscriber.createdAt)}</span>
+                            <span>Updated: {formatAdminValue(subscriber.updatedAt)}</span>
+                            <span>Period end: {formatAdminValue(subscriber.currentPeriodEnd)}</span>
+                          </td>
+                          <td>
+                            <span>Total: {formatAdminValue(subscriber.deliveryCount)}</span>
+                            <span>Email: {formatAdminValue(subscriber.emailDeliveryCount)}</span>
+                            <span>SMS: {formatAdminValue(subscriber.smsDeliveryCount)}</span>
+                            <span>Errors: {formatAdminValue(subscriber.deliveryErrorCount)}</span>
+                          </td>
+                          <td>
+                            <details className="subscriber-details">
+                              <summary>View</summary>
+                              <dl>
+                                {getSubscriberFields(subscriber).map(([key, value]) => (
+                                  <div key={key}>
+                                    <dt>{key}</dt>
+                                    <dd>{formatAdminValue(value)}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </details>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : !subscriberLoading ? (
+                <p className="empty-state">No subscriber records found.</p>
+              ) : null}
+            </section>
+          )}
+        </section>
       </main>
     </>
   )
@@ -3415,6 +4290,10 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
 
     content = (
       <main className="app-shell">
+        <p className="signup-provider-notice homepage-signup-notice">
+          <a href="/signup">Sign up</a> for text message or email notifications.
+        </p>
+
         {visibleDashboard.warning ? (
           <section className="status-banner">
             <strong>{visibleDashboard.mode === 'demo' ? 'Demo mode.' : 'Configuration required.'}</strong>
@@ -3471,7 +4350,7 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
               </a>{' '}
               /{' '}
               <a href="https://t.me/apocalypse_ews" target="_blank" rel="noreferrer">
-                Telegram Notifications
+                Telegram
               </a>{' '}
               /{' '}
               <a href="https://ews.kylemcdonald.net/rss.xml" target="_blank" rel="noreferrer">
@@ -3479,7 +4358,7 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
               </a>{' '}
               /{' '}
               <a href={DISCORD_BOT_URL} target="_blank" rel="noreferrer">
-                Discord Bot
+                Discord
               </a>
             </p>
           </section>
@@ -3529,8 +4408,23 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
 }
 
 function App() {
+  if (
+    window.location.pathname === '/admin/test-alert' ||
+    window.location.pathname.startsWith('/admin/test-alert/')
+  ) {
+    const nextPath = window.location.pathname.startsWith('/admin/test-alert/subscribers')
+      ? '/admin/subscribers'
+      : '/admin'
+    window.history.replaceState(null, '', `${nextPath}${window.location.search}${window.location.hash}`)
+    return <AdminTestAlertPage />
+  }
+
   if (window.location.pathname === '/signup' || window.location.pathname.startsWith('/signup/')) {
     return <SignupPage />
+  }
+
+  if (window.location.pathname === '/admin' || window.location.pathname === '/admin/subscribers') {
+    return <AdminTestAlertPage />
   }
 
   return <DashboardApp dashboardUrl={DASHBOARD_URL} enableCohortControls primaryCohortKind="business" />

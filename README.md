@@ -83,6 +83,9 @@ When the import or backfill starts, any previously seeded demo data is removed s
 ```bash
 npm run dev
 npm run build
+npm run pages:dev
+npm run d1:migrate:local
+npm run d1:migrate:remote
 npm run lint
 npm run import:faa
 npm run import:global
@@ -134,6 +137,87 @@ Required account-owned token permissions for this repo:
 If you use a user-owned API token instead of an account-owned token, also include `User Details: Read` and `User Memberships: Read`. Account-owned tokens are preferred here because they act as CI service credentials rather than as copied user session state.
 
 After replacing the secret, rerun the `Deploy Pages` workflow. The old `WRANGLER_OAUTH_CONFIG` repository secret is no longer used by these workflows.
+
+### Paid SMS and email notifications
+
+The public Pages deployment includes Cloudflare Pages Functions for paid notification signup, Stripe webhooks, and the Cloudflare Access-protected `/admin` pages. Subscriber contact details are stored in Cloudflare D1 using encrypted email/phone fields plus keyed hashes for lookup and dedupe.
+
+Create the D1 database:
+
+```bash
+npx wrangler d1 create ews-notifications
+```
+
+Copy `wrangler.example.toml` to the ignored `wrangler.toml`, replace the `database_id`, then apply the schema:
+
+```bash
+npm run d1:migrate:local
+npm run d1:migrate:remote
+```
+
+In the Cloudflare Pages project, add a D1 binding named `EWS_NOTIFY_DB` pointing at `ews-notifications`. Add these Pages secrets/environment variables:
+
+```text
+APP_BASE_URL=https://ews.kylemcdonald.net
+EWS_PUBLIC_URL=https://ews.kylemcdonald.net/
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+STRIPE_PRODUCT_ID=prod_USlMnoY4GL7OAn
+STRIPE_PRICE_ID=...
+SENDGRID_API_KEY=...
+SENDGRID_FROM_EMAIL=alerts@your-domain.example
+SENDGRID_FROM_NAME=Apocalypse EWS
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_API_KEY_SID=...
+TWILIO_API_KEY_SECRET=...
+TWILIO_FROM_PHONE=+1...
+TWILIO_MESSAGING_SERVICE_SID=...
+TWILIO_STATUS_CALLBACK_URL=...
+INTERNAL_ALERT_TOKEN=...
+NOTIFICATION_HASH_SECRET=...
+NOTIFICATION_ENCRYPTION_KEY=...
+```
+
+`STRIPE_PRICE_ID` is optional. If it is blank, the signup function resolves the active `$5/year` price for `STRIPE_PRODUCT_ID`. For Twilio authentication, use either `TWILIO_AUTH_TOKEN` or `TWILIO_API_KEY_SID`/`TWILIO_API_KEY_SECRET`. For SMS sending, use either `TWILIO_FROM_PHONE` or a real `MG...` `TWILIO_MESSAGING_SERVICE_SID`. `TWILIO_STATUS_CALLBACK_URL` is optional; if it is blank, production SMS sends use `${EWS_PUBLIC_URL}/api/twilio/status-callback`. Generate `NOTIFICATION_ENCRYPTION_KEY` with:
+
+```bash
+openssl rand -base64 32
+```
+
+For local testing, copy `.dev.vars.example` to `.dev.vars` and fill the same values. This workspace already has ignored local scaffolding in `.dev.vars` and `wrangler.toml`; replace the blank SendGrid, Twilio, and Stripe webhook values before testing end to end.
+
+Run the local Pages app with Functions and local D1:
+
+```bash
+npm run pages:dev
+```
+
+Stripe Checkout redirects to `/signup?success=1`, but the subscription is only activated by the webhook. For local webhook testing:
+
+```bash
+stripe listen --forward-to http://localhost:8788/api/stripe/webhook
+```
+
+Copy the printed `whsec_...` value into `STRIPE_WEBHOOK_SECRET` in `.dev.vars`, then restart `npm run pages:dev`.
+
+For production, add a Stripe webhook endpoint at:
+
+```text
+https://ews.kylemcdonald.net/api/stripe/webhook
+```
+
+Subscribe it to `checkout.session.completed`, `checkout.session.expired`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
+
+The scheduled refresh workflows call `/api/internal/level5-alert` after dashboard export. Add a GitHub repository secret named `EWS_INTERNAL_ALERT_TOKEN` with the same value as the Cloudflare Pages `INTERNAL_ALERT_TOKEN` secret. SMS/email alerts send only for emergency level 5 and are globally cooled down for 24 hours.
+
+For Twilio toll-free numbers, configure the number's incoming SMS webhook to:
+
+```text
+https://ews.kylemcdonald.net/api/twilio/inbound-sms
+```
+
+The app records Twilio delivery callbacks in D1. A Twilio `30032` delivery error means the toll-free number is still restricted or pending verification, so US/Canada delivery is blocked until Twilio approves the toll-free verification.
 
 ### Telegram emergency alerts
 

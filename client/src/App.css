@@ -606,6 +606,25 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   cursor: grabbing;
 }
 
+.maplibre-map {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 340px;
+  aspect-ratio: 800 / 410;
+  overflow: hidden;
+  background: #ffffff;
+  cursor: grab;
+}
+
+.maplibre-map .maplibregl-canvas {
+  outline: none;
+}
+
+.maplibre-map .maplibregl-canvas:active {
+  cursor: grabbing;
+}
+
 .map-frame ::selection {
   background: transparent;
   color: inherit;
@@ -801,6 +820,18 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   margin-bottom: 0;
 }
 
+.signup-provider-notice {
+  margin: 0 0 0.85rem;
+  padding: 10px 12px;
+  border: 1px solid #999999;
+  background: #ffffdd;
+  color: #000000;
+}
+
+.homepage-signup-notice {
+  margin: 0;
+}
+
 .signup-panel {
   display: grid;
   gap: 12px;
@@ -833,7 +864,8 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
 
 .signup-field input:focus-visible,
 .signup-consent input:focus-visible,
-.signup-submit:focus-visible {
+.signup-submit:focus-visible,
+.mode-control button:focus-visible {
   outline: 1px dotted #000000;
   outline-offset: 2px;
 }
@@ -859,8 +891,77 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   cursor: pointer;
 }
 
+.signup-submit:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .signup-submit:hover {
   background: #e5e5e5;
+}
+
+.mode-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(100%, 280px);
+  border: 1px solid #999999;
+}
+
+.mode-control button {
+  min-height: 36px;
+  border: 0;
+  border-right: 1px solid #999999;
+  background: #ffffff;
+  color: #000000;
+  cursor: pointer;
+}
+
+.mode-control button:last-child {
+  border-right: 0;
+}
+
+.mode-control-active {
+  background: #e8e8e8 !important;
+  font-weight: 700;
+}
+
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 0.75rem;
+}
+
+.admin-tabs a {
+  padding: 4px 8px;
+  border: 1px solid #999999;
+  background: #ffffff;
+  color: #000000;
+  font-weight: 700;
+}
+
+.admin-tabs a:visited {
+  color: #000000;
+}
+
+.admin-tab-active {
+  background: #e8e8e8 !important;
+}
+
+.admin-wide-panel {
+  grid-column: 1 / -1;
+}
+
+.admin-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-summary-grid span {
+  padding: 8px;
+  border: 1px solid #cccccc;
+  overflow-wrap: anywhere;
 }
 
 .signup-status {
@@ -877,6 +978,130 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
 .signup-status-success {
   background: #eef6ee;
   color: #000000;
+}
+
+.signup-repeat {
+  margin: 0;
+}
+
+.signup-repeat button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #000000;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+.signup-repeat button:focus-visible {
+  outline: 1px dotted #000000;
+  outline-offset: 2px;
+}
+
+.delivery-history {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.delivery-history h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.delivery-history-list {
+  display: grid;
+  border: 1px solid #999999;
+}
+
+.delivery-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 10px;
+  padding: 8px;
+  border-bottom: 1px solid #cccccc;
+  font-size: 12px;
+}
+
+.delivery-history-row:last-child {
+  border-bottom: 0;
+}
+
+.delivery-history-row div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.delivery-history-row strong,
+.delivery-history-row span,
+.delivery-history-row em {
+  overflow-wrap: anywhere;
+}
+
+.delivery-history-row em {
+  font-style: normal;
+  color: #990000;
+}
+
+.subscriber-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.subscriber-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.subscriber-table th,
+.subscriber-table td {
+  padding: 8px;
+  border: 1px solid #cccccc;
+  vertical-align: top;
+  text-align: left;
+}
+
+.subscriber-table th {
+  background: #f7f7f7;
+}
+
+.subscriber-table td {
+  overflow-wrap: anywhere;
+}
+
+.subscriber-table td > strong,
+.subscriber-table td > span {
+  display: block;
+}
+
+.subscriber-details summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.subscriber-details dl {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+
+.subscriber-details div {
+  display: grid;
+  gap: 2px;
+}
+
+.subscriber-details dt {
+  font-weight: 700;
+}
+
+.subscriber-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .chart-frame {
@@ -1436,6 +1661,11 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
 
   .map-svg {
     order: 1;
+  }
+
+  .maplibre-map {
+    order: 1;
+    min-height: 340px;
   }
 
   .map-svg-narrow {
