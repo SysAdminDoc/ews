@@ -2593,11 +2593,7 @@ function fitMapLibreWorld(
   setMapZoom(map.getZoom())
 }
 
-function enforceMapLibreBounds(map, minZoom, clampingRef) {
-  if (clampingRef.current) {
-    return
-  }
-
+function getMapLibreConstrainedCenter(map, minZoom) {
   const bounds = map.getBounds()
   const center = map.getCenter()
   const [[west, south], [east, north]] = MAPLIBRE_WORLD_BOUNDS
@@ -2639,6 +2635,38 @@ function enforceMapLibreBounds(map, minZoom, clampingRef) {
 
   nextLng = clamp(nextLng, west, east)
   nextLat = clamp(nextLat, south, north)
+
+  return [nextLng, nextLat]
+}
+
+function getMapLibreConstrainedCenterForZoom(map, zoom, minZoom, clampingRef) {
+  const originalCenter = map.getCenter()
+  const originalZoom = map.getZoom()
+  const wasClamping = clampingRef.current
+
+  clampingRef.current = true
+  try {
+    map.jumpTo({
+      center: originalCenter,
+      zoom,
+    })
+    return getMapLibreConstrainedCenter(map, minZoom)
+  } finally {
+    map.jumpTo({
+      center: originalCenter,
+      zoom: originalZoom,
+    })
+    clampingRef.current = wasClamping
+  }
+}
+
+function enforceMapLibreBounds(map, minZoom, clampingRef) {
+  if (clampingRef.current) {
+    return
+  }
+
+  const center = map.getCenter()
+  const [nextLng, nextLat] = getMapLibreConstrainedCenter(map, minZoom)
   if (Math.abs(nextLng - center.lng) <= 0.000001 && Math.abs(nextLat - center.lat) <= 0.000001) {
     return
   }
@@ -2918,7 +2946,11 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
     if (programmaticZoomEndRef.current) {
       map.off('moveend', programmaticZoomEndRef.current)
       programmaticZoomEndRef.current = null
+      clampingRef.current = false
+      map.stop()
     }
+
+    const nextCenter = getMapLibreConstrainedCenterForZoom(map, nextZoom, minZoomRef.current, clampingRef)
 
     clampingRef.current = true
     const finishProgrammaticZoom = () => {
@@ -2930,6 +2962,7 @@ function GlobalMap({ aircraft, dataUnavailable = false, liveStatus = null }) {
     programmaticZoomEndRef.current = finishProgrammaticZoom
     map.once('moveend', finishProgrammaticZoom)
     map.easeTo({
+      center: nextCenter,
       zoom: nextZoom,
       duration: 180,
     })
