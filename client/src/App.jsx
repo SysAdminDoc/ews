@@ -2329,11 +2329,11 @@ function createMapLibreEqualEarthStyle() {
       },
       'equal-earth-supplemental-country-fill': {
         type: 'geojson',
-        data: '/map-patches/morocco-sahara-fill.geojson',
+        data: '/map-patches/morocco-sahara-fill.geojson?v=20260506-vector-tile',
       },
       'equal-earth-supplemental-country-outline': {
         type: 'geojson',
-        data: '/map-patches/morocco-sahara-outline.geojson',
+        data: '/map-patches/morocco-sahara-outline.geojson?v=20260506-vector-tile',
       },
       countries: {
         type: 'vector',
