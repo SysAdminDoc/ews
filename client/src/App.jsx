@@ -59,6 +59,7 @@ const MAPLIBRE_WORLD_BOUNDS = [[-180, -65.542], [180, 65.542]]
 const MAPLIBRE_CONUS_GEOGRAPHIC_BOUNDS = [[-124.85, 24.4], [-66.9, 49.6]]
 const MAPLIBRE_WORLD_FIT_PADDING = 12
 const MAPLIBRE_EQUAL_EARTH_GRID_FACTOR = 20037508.3427892 / 17243959.06
+const MAPLIBRE_EQUAL_EARTH_PATCH_BASE_URL = 'https://raw.githubusercontent.com/kylemcdonald/equal-earth-web-mapping/c78a447adc643a4ecada3049f8fe6a92c00c88a9/static/map-patches'
 const EMERGENCY_LEVEL_COUNT = 5
 const EMERGENCY_SCHEME_TAP_WINDOW_MS = 700
 const MIN_ALARM_SIGMA_THRESHOLD = 4
@@ -2329,11 +2330,11 @@ function createMapLibreEqualEarthStyle() {
       },
       'equal-earth-supplemental-country-fill': {
         type: 'geojson',
-        data: '/map-patches/morocco-sahara-fill.geojson?v=20260506-vector-tile',
+        data: `${MAPLIBRE_EQUAL_EARTH_PATCH_BASE_URL}/morocco-sahara-fill.geojson`,
       },
       'equal-earth-supplemental-country-outline': {
         type: 'geojson',
-        data: '/map-patches/morocco-sahara-outline.geojson?v=20260506-vector-tile',
+        data: `${MAPLIBRE_EQUAL_EARTH_PATCH_BASE_URL}/morocco-sahara-outline.geojson`,
       },
       countries: {
         type: 'vector',
