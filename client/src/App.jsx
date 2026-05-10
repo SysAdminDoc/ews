@@ -4,14 +4,9 @@ import proj4 from 'proj4'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
 
-const DEFAULT_DASHBOARD_URL = 'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/dashboard.json'
-const DEFAULT_MILITARY_DASHBOARD_URL =
-  'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/military-dashboard.json'
-const DEFAULT_UNTRACKED_DASHBOARD_URL =
-  'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/untracked-dashboard.json'
-const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || DEFAULT_DASHBOARD_URL
-const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || DEFAULT_MILITARY_DASHBOARD_URL
-const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || DEFAULT_UNTRACKED_DASHBOARD_URL
+const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || '/dashboard.json'
+const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || '/military-dashboard.json'
+const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || '/untracked-dashboard.json'
 const DISCORD_BOT_URL = 'https://jamiew.github.io/apocalypse-ews-discord/'
 const COHORT_CONFIGS = [
   { id: 'business', label: 'Business jets', dashboardUrl: DASHBOARD_URL },
@@ -3538,7 +3533,9 @@ function SignupPage() {
               <em>
                 Signup info may be temporarily stored for up to 24 hours to allow checkout to complete, then deleted if
                 unfinished. Contact info is only used for alerts and related account communication, never sold or used
-                for marketing. If you have questions about your subscription, please{' '}
+                for marketing. Update or cancel your subscription using{' '}
+                <a href="https://billing.stripe.com/p/login/6oU7sL14I6ewbuL2dJ4ow00">the portal</a>. If you have
+                questions about your subscription, please{' '}
                 <a href="mailto:ews@kylemcdonald.net">email me</a>.
               </em>
             </p>
