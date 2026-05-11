@@ -56,7 +56,15 @@
     <div id="root"></div>
     <script type="module">
       const loaderVideo = document.querySelector('#initial-loader video')
+      const isEventSignalsRoute =
+        window.location.pathname === '/event-signals' || window.location.pathname.startsWith('/event-signals/')
       let appStarted = false
+
+      function removeInitialLoader() {
+        const initialLoader = document.getElementById('initial-loader')
+        document.documentElement.classList.remove('initial-loading')
+        initialLoader?.remove()
+      }
 
       function startApp() {
         if (appStarted) {
@@ -64,12 +72,21 @@
         }
 
         appStarted = true
+
+        if (isEventSignalsRoute) {
+          removeInitialLoader()
+          import('/src/main.jsx')
+          return
+        }
+
         requestAnimationFrame(() => {
           setTimeout(() => import('/src/main.jsx'), 0)
         })
       }
 
-      if (loaderVideo) {
+      if (isEventSignalsRoute) {
+        startApp()
+      } else if (loaderVideo) {
         loaderVideo.addEventListener('loadeddata', startApp, { once: true })
         loaderVideo.addEventListener('error', startApp, { once: true })
 
