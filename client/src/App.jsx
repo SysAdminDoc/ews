@@ -3,10 +3,12 @@ import maplibregl from 'maplibre-gl'
 import proj4 from 'proj4'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
+import EventSignalExplainer from './EventSignalExplainer.jsx'
 
-const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || '/dashboard.json'
-const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || '/military-dashboard.json'
-const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || '/untracked-dashboard.json'
+const PUBLIC_DASHBOARD_BASE_URL = 'https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev'
+const DASHBOARD_URL = import.meta.env.VITE_DASHBOARD_URL || `${PUBLIC_DASHBOARD_BASE_URL}/dashboard.json`
+const MILITARY_DASHBOARD_URL = import.meta.env.VITE_MILITARY_DASHBOARD_URL || `${PUBLIC_DASHBOARD_BASE_URL}/military-dashboard.json`
+const UNTRACKED_DASHBOARD_URL = import.meta.env.VITE_UNTRACKED_DASHBOARD_URL || `${PUBLIC_DASHBOARD_BASE_URL}/untracked-dashboard.json`
 const DISCORD_BOT_URL = 'https://jamiew.github.io/apocalypse-ews-discord/'
 const COHORT_CONFIGS = [
   { id: 'business', label: 'Business jets', dashboardUrl: DASHBOARD_URL },
@@ -4643,6 +4645,10 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
 }
 
 function App() {
+  if (window.location.pathname === '/event-signals' || window.location.pathname.startsWith('/event-signals/')) {
+    return <EventSignalExplainer />
+  }
+
   if (
     window.location.pathname === '/admin/test-alert' ||
     window.location.pathname.startsWith('/admin/test-alert/')
