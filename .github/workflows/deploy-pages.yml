@@ -72,3 +72,9 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         run: npx wrangler pages deploy client/dist --project-name apocalypse-ews --branch main --commit-hash "$GITHUB_SHA"
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: Smoke test live site
+        run: npm run smoke:live

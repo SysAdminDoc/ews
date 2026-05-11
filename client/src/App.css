@@ -87,6 +87,7 @@
 .about-panel,
 .faq-panel,
 .updates-panel,
+.data-unavailable-panel,
 .loading-panel,
 .error-panel,
 .provider-panel,
@@ -132,6 +133,11 @@
 .status-banner strong {
   display: inline;
   margin-right: 6px;
+}
+
+.status-banner-error {
+  border-color: #990000;
+  background: #fff0f0;
 }
 
 .loading-screen {
@@ -1639,6 +1645,15 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   padding: 10px 12px;
   border: 1px solid #cccccc;
   background: #f8f8f8;
+}
+
+.data-unavailable-state {
+  display: grid;
+  gap: 4px;
+}
+
+.data-unavailable-state span {
+  display: block;
 }
 
 .updates-copy {

@@ -122,6 +122,21 @@ The public deployment can run with:
 
 The repository includes scheduled workflows in `.github/workflows/refresh-live-data.yml` and `.github/workflows/refresh-daily-history.yml` for that setup. The main site uses the global business-jet state DB, while military and non-ICAO cohorts are published as JSON data sources for the root dashboard toggles. All three are refreshed from the newest heatmap on the half-hour cadence and uploaded to R2.
 
+Production frontend builds require explicit dashboard snapshot URLs. The build fails if `VITE_DASHBOARD_URL`, `VITE_MILITARY_DASHBOARD_URL`, or `VITE_UNTRACKED_DASHBOARD_URL` is missing, and `npm run build` also verifies that the emitted bundle contains those URLs rather than the local `/dashboard.json` fallback.
+
+For local Pages deploys, prefer the guarded deploy script:
+
+```bash
+npm run verify:deploy-env
+npm run deploy:pages
+```
+
+`deploy:pages` loads `.env`, builds, verifies the bundle, preserves the currently deployed RSS file, deploys to Cloudflare Pages, then runs a Playwright smoke test against the live site. For a Codex-assisted visual check, run:
+
+```bash
+npm run smoke:live:prompt
+```
+
 ### Cloudflare credentials
 
 Do not use `wrangler login` output or a copied `WRANGLER_OAUTH_CONFIG` secret in GitHub Actions. That is interactive user login state and can stop refreshing. The workflows use `CLOUDFLARE_API_TOKEN` instead.

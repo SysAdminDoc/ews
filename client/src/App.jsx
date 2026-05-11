@@ -16,6 +16,7 @@ const COHORT_CONFIGS = [
 const COHORT_LOADING_DELAY_MS = 1000
 const DASHBOARD_CACHE_BUSTER_MINUTES = 5
 const DASHBOARD_POLL_INTERVAL_MS = 5 * 60_000
+const DASHBOARD_JSON_CONTENT_TYPE_PATTERN = /\b(?:application\/json|[\w.+-]+\/[\w.+-]+\+json)\b/i
 const AIRCRAFT_MARKER_PATH = 'M0 -9 L2.2 -1.5 L8 1.2 L8 3.4 L1.8 2.1 L1.8 6.4 L4.2 8 L4.2 9 L0 7.5 L-4.2 9 L-4.2 8 L-1.8 6.4 L-1.8 2.1 L-8 3.4 L-8 1.2 L-2.2 -1.5 Z'
 const ARCHIVE_DAY_MS = 24 * 60 * 60 * 1000
 const ADSB_DATA_UNAVAILABLE_THRESHOLD_MS = ARCHIVE_DAY_MS
@@ -1251,6 +1252,56 @@ function buildDashboardRequestUrl(dashboardUrl) {
   const bucketMs = DASHBOARD_CACHE_BUSTER_MINUTES * 60 * 1000
   url.searchParams.set('v', String(Math.floor(Date.now() / bucketMs)))
   return url.toString()
+}
+
+function createDashboardLoadError(message, details, cause = null) {
+  const error = new Error(message)
+  if (cause) {
+    error.cause = cause
+  }
+  error.dashboardDetails = details
+  return error
+}
+
+async function fetchDashboardSnapshot(dashboardUrl) {
+  const requestUrl = buildDashboardRequestUrl(dashboardUrl)
+  const response = await fetch(requestUrl, {
+    cache: 'no-store',
+  })
+  const contentType = response.headers.get('content-type') || ''
+  const responseText = await response.text()
+  const details = {
+    requestUrl,
+    status: response.status,
+    statusText: response.statusText,
+    contentType,
+    responseText,
+  }
+
+  if (!response.ok) {
+    throw createDashboardLoadError(`Dashboard request failed with ${response.status}`, details)
+  }
+
+  try {
+    return JSON.parse(responseText)
+  } catch (cause) {
+    const contentTypeHint =
+      contentType && !DASHBOARD_JSON_CONTENT_TYPE_PATTERN.test(contentType)
+        ? `; received ${contentType}`
+        : ''
+    throw createDashboardLoadError(`Dashboard response was not valid JSON${contentTypeHint}`, details, cause)
+  }
+}
+
+function getDashboardLoadErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error || 'Dashboard data could not be loaded.')
+}
+
+function logDashboardLoadError(label, error) {
+  console.error(label, error)
+  if (error?.dashboardDetails) {
+    console.error(`${label} response details`, error.dashboardDetails)
+  }
 }
 
 function toFiniteNumber(value, fallback = null) {
@@ -3305,6 +3356,20 @@ function UpdatesCard({ copy }) {
   )
 }
 
+function DataUnavailablePanel({ title, message }) {
+  return (
+    <section className="panel data-unavailable-panel">
+      <div className="panel-header">
+        <div><h2>{title}</h2></div>
+      </div>
+      <div className="empty-state data-unavailable-state">
+        <strong>Data unavailable.</strong>
+        <span>{message || 'The latest dashboard snapshot could not be loaded.'}</span>
+      </div>
+    </section>
+  )
+}
+
 function LoadingAnimation() {
   return (
     <main className="loading-screen" aria-label="Loading">
@@ -4267,20 +4332,14 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
 
     async function loadDashboard() {
       try {
-        const response = await fetch(buildDashboardRequestUrl(dashboardUrl), {
-          cache: 'no-store',
-        })
-        if (!response.ok) {
-          throw new Error(`Dashboard request failed with ${response.status}`)
-        }
-
-        const nextDashboard = await response.json()
+        const nextDashboard = await fetchDashboardSnapshot(dashboardUrl)
         if (active) {
           applyDashboard(nextDashboard)
         }
       } catch (nextError) {
+        logDashboardLoadError('Primary dashboard load failed', nextError)
         if (active) {
-          setError(nextError.message)
+          setError(getDashboardLoadErrorMessage(nextError))
         }
       }
     }
@@ -4329,14 +4388,7 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
       }
 
       try {
-        const response = await fetch(buildDashboardRequestUrl(config.dashboardUrl), {
-          cache: 'no-store',
-        })
-        if (!response.ok) {
-          throw new Error(`Dashboard request failed with ${response.status}`)
-        }
-
-        const nextDashboard = await response.json()
+        const nextDashboard = await fetchDashboardSnapshot(config.dashboardUrl)
         if (!active) {
           return
         }
@@ -4346,8 +4398,9 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
           setExtraDashboardErrors((current) => ({ ...current, [config.id]: null }))
         })
       } catch (nextError) {
+        logDashboardLoadError(`${config.label} dashboard load failed`, nextError)
         if (active) {
-          setExtraDashboardErrors((current) => ({ ...current, [config.id]: nextError.message }))
+          setExtraDashboardErrors((current) => ({ ...current, [config.id]: getDashboardLoadErrorMessage(nextError) }))
         }
       } finally {
         if (loadingTimerId) {
@@ -4433,10 +4486,10 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
       }
     : null
 
-  const shouldShowLoading = !dashboard || !backgroundReady
+  const shouldShowLoading = (!dashboard && !error) || (Boolean(dashboard) && !backgroundReady)
 
   useEffect(() => {
-    if (shouldShowLoading && !(error && !dashboard)) {
+    if (shouldShowLoading) {
       return undefined
     }
 
@@ -4471,25 +4524,20 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
 
   let content = null
 
-  if (error && !dashboard) {
-    content = (
-      <main className="app-shell">
-        <section className="panel error-panel">
-          <h1>Data Unavailable</h1>
-          <p>{error}</p>
-        </section>
-      </main>
-    )
-  } else if (shouldShowLoading) {
+  if (shouldShowLoading) {
     content = document.getElementById('initial-loader') ? null : <LoadingAnimation />
   } else {
-    const archiveData = visibleDashboard.trends?.archive ?? []
-    const holidayWindows = visibleDashboard.trends?.holidayWindows ?? []
-    const liveAircraft = visibleDashboard.liveAircraft ?? []
-    const liveStatus = visibleDashboard.liveStatus ?? null
-    const cohortCopy = getCohortCopy(visibleDashboard.cohort)
-    const adsbDataStatus = getAdsbDataUnavailableStatus(liveStatus)
-    const compositeSignal = visibleDashboard.signals?.composite ?? {
+    const hasDashboard = Boolean(visibleDashboard)
+    const dashboardErrorMessage = error || 'The latest dashboard snapshot could not be loaded.'
+    const archiveData = visibleDashboard?.trends?.archive ?? []
+    const holidayWindows = visibleDashboard?.trends?.holidayWindows ?? []
+    const liveAircraft = visibleDashboard?.liveAircraft ?? []
+    const liveStatus = visibleDashboard?.liveStatus ?? null
+    const cohortCopy = getCohortCopy(visibleDashboard?.cohort)
+    const adsbDataStatus = hasDashboard
+      ? getAdsbDataUnavailableStatus(liveStatus)
+      : { isUnavailable: true, isStale: true, ageMs: null }
+    const compositeSignal = visibleDashboard?.signals?.composite ?? (visibleDashboard?.current ? {
       asOf: visibleDashboard.current?.asOf,
       actualConcurrentCount: visibleDashboard.current?.concurrentCount,
       expectedConcurrentCount: visibleDashboard.current?.baselineMean,
@@ -4497,21 +4545,22 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
       sigmaShift: visibleDashboard.current?.zScore,
       alertLevel: visibleDashboard.current?.alertLevel,
       emergencyLevel: visibleDashboard.current?.emergencyLevel,
-    }
+    } : null)
     const seatEstimateAircraft =
       cohortCopy.kind === 'combined'
         ? liveAircraft.filter((plane) => plane.cohortKind === 'business')
         : liveAircraft
     const businessActualCount =
-      selectedCohorts.business
+      hasDashboard && selectedCohorts.business
         ? dashboard.signals?.composite?.actualConcurrentCount ?? dashboard.current?.concurrentCount
         : null
-    const maxSeatsAirborneEstimate = cohortCopy.showSeatEstimate
-      ? estimateMaxSeatsAirborne(
-          seatEstimateAircraft,
-          cohortCopy.kind === 'combined' ? businessActualCount : compositeSignal.actualConcurrentCount,
-        )
-      : null
+    const maxSeatsAirborneEstimate =
+      hasDashboard && cohortCopy.showSeatEstimate
+        ? estimateMaxSeatsAirborne(
+            seatEstimateAircraft,
+            cohortCopy.kind === 'combined' ? businessActualCount : compositeSignal?.actualConcurrentCount,
+          )
+        : null
     const loadingCohortLabels = enableCohortControls
       ? COHORT_CONFIGS
           .filter((config) => selectedCohorts[config.id] && loadingCohorts[config.id] && !extraDashboards[config.id])
@@ -4529,14 +4578,28 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
           <a href="/signup">Sign up</a> for text message or email notifications.
         </p>
 
-        {visibleDashboard.warning ? (
+        {error && !hasDashboard ? (
+          <section className="status-banner status-banner-error">
+            <strong>Dashboard data unavailable.</strong>
+            <span>{dashboardErrorMessage}</span>
+          </section>
+        ) : null}
+
+        {error && hasDashboard ? (
+          <section className="status-banner status-banner-error">
+            <strong>Live refresh failed.</strong>
+            <span>{dashboardErrorMessage} The currently displayed snapshot remains visible.</span>
+          </section>
+        ) : null}
+
+        {hasDashboard && visibleDashboard.warning ? (
           <section className="status-banner">
             <strong>{visibleDashboard.mode === 'demo' ? 'Demo mode.' : 'Configuration required.'}</strong>
             <span>{visibleDashboard.warning}</span>
           </section>
         ) : null}
 
-        {!visibleDashboard.warning && !liveStatus?.latestSampledAt ? (
+        {hasDashboard && !visibleDashboard.warning && !liveStatus?.latestSampledAt ? (
           <section className="status-banner">
             <strong>No recent sweep.</strong>
             <span>The backend polls the newest heatmap every 30 minutes and serves the latest cached sample.</span>
@@ -4598,35 +4661,52 @@ function DashboardApp({ dashboardUrl = DASHBOARD_URL, enableCohortControls = fal
             </p>
           </section>
           <div className="dial-stack">
-            <EmergencySummary
-              signal={compositeSignal}
-              latestSweep={formatTimestamp(visibleDashboard.current?.asOf)}
-              actualCount={compositeSignal.actualConcurrentCount}
-              expectedCount={compositeSignal.expectedConcurrentCount}
-              trackedCount={visibleDashboard.cohort?.trackedCount ?? visibleDashboard.watchlist?.trackedCount}
-              maxSeatsAirborneEstimate={maxSeatsAirborneEstimate}
-              onEmergencyLevelTap={handleEmergencyLevelTap}
-            />
+            {hasDashboard ? (
+              <EmergencySummary
+                signal={compositeSignal}
+                latestSweep={formatTimestamp(visibleDashboard.current?.asOf)}
+                actualCount={compositeSignal?.actualConcurrentCount}
+                expectedCount={compositeSignal?.expectedConcurrentCount}
+                trackedCount={visibleDashboard.cohort?.trackedCount ?? visibleDashboard.watchlist?.trackedCount}
+                maxSeatsAirborneEstimate={maxSeatsAirborneEstimate}
+                onEmergencyLevelTap={handleEmergencyLevelTap}
+              />
+            ) : (
+              <DataUnavailablePanel title="Dashboard Data Unavailable" message={dashboardErrorMessage} />
+            )}
           </div>
         </section>
 
         <section className="focus-map-grid">
-          <GlobalMap
-            aircraft={liveAircraft}
-            dataUnavailable={adsbDataStatus.isUnavailable}
-            liveStatus={liveStatus}
-          />
+          {hasDashboard ? (
+            <GlobalMap
+              aircraft={liveAircraft}
+              dataUnavailable={adsbDataStatus.isUnavailable}
+              liveStatus={liveStatus}
+            />
+          ) : (
+            <DataUnavailablePanel title="Realtime Tracker Unavailable" message={dashboardErrorMessage} />
+          )}
         </section>
 
         <section className="details-stack">
-          <ArchiveChart
-            data={archiveData}
-            signal={compositeSignal}
-            holidayWindows={holidayWindows}
-            cohortControls={cohortControls}
-          />
-          <ModelSummaryList aircraft={liveAircraft} copy={cohortCopy} />
-          <AboutSystemCard cohort={visibleDashboard.cohort} copy={cohortCopy} />
+          {hasDashboard ? (
+            <>
+              <ArchiveChart
+                data={archiveData}
+                signal={compositeSignal}
+                holidayWindows={holidayWindows}
+                cohortControls={cohortControls}
+              />
+              <ModelSummaryList aircraft={liveAircraft} copy={cohortCopy} />
+            </>
+          ) : (
+            <>
+              <DataUnavailablePanel title="Traffic Archive Unavailable" message={dashboardErrorMessage} />
+              <DataUnavailablePanel title="Aircraft Summary Unavailable" message={dashboardErrorMessage} />
+            </>
+          )}
+          <AboutSystemCard cohort={visibleDashboard?.cohort} copy={cohortCopy} />
           <FaqCard />
           <UpdatesCard copy={cohortCopy} />
         </section>

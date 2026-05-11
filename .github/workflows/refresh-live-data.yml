@@ -208,6 +208,14 @@ jobs:
           cp tmp/rss.xml client/dist/rss.xml
           npx wrangler pages deploy client/dist --project-name apocalypse-ews --branch main --commit-hash "$GITHUB_SHA"
 
+      - name: Install Playwright browser
+        if: steps.rss.outputs.updated == 'true'
+        run: npx playwright install chromium
+
+      - name: Smoke test live site
+        if: steps.rss.outputs.updated == 'true'
+        run: npm run smoke:live
+
       - name: Publish live snapshot
         run: |
           for attempt in 1 2 3 4 5; do
