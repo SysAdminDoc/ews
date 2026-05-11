@@ -1,4 +1,5 @@
 import { Suspense, lazy, startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { parsePhoneNumberFromString } from 'libphonenumber-js/min'
 import proj4 from 'proj4'
 import './App.css'
 
@@ -42,6 +43,7 @@ const BACKGROUND_URL = '/backgrounds/soft-cartoon-tile-15.webp'
 const BACKGROUND_PRELOAD_LINK_ID = 'background-preload'
 const SUBSCRIBERS_PER_PAGE = 20
 const SUBSCRIPTION_GROSS_DOLLARS = 5
+const PHONE_VALIDATION_MESSAGE = 'Enter a valid phone number. Use 10 digits for US/Canada, or + and country code for international numbers.'
 const ARCHIVE_CHART_WIDTH = 960
 const ARCHIVE_CHART_MOBILE_WIDTH = 440
 const ARCHIVE_CHART_HEIGHT = 320
@@ -244,6 +246,45 @@ const AIRCRAFT_MODEL_MAX_PASSENGERS = new Map([
   ['TEXTRON AVIATION INC 700', 12],
   ['TEXTRON AVIATION INC. 525B', 9],
 ])
+
+function getPhoneCandidate(raw, digits, withPlus) {
+  if (withPlus) {
+    return `+${digits}`
+  }
+
+  if (digits.startsWith('00') && digits.length > 2) {
+    return `+${digits.slice(2)}`
+  }
+
+  if (digits.length === 10) {
+    return `+1${digits}`
+  }
+
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `+${digits}`
+  }
+
+  throw new Error(PHONE_VALIDATION_MESSAGE)
+}
+
+function normalizePhoneInput(value) {
+  const raw = String(value || '').trim()
+  if (!raw) {
+    return ''
+  }
+
+  const digits = raw.replace(/[^\d]/g, '')
+  if (!digits) {
+    throw new Error('Enter a valid phone number.')
+  }
+
+  const parsed = parsePhoneNumberFromString(getPhoneCandidate(raw, digits, raw.startsWith('+')))
+  if (!parsed?.isValid()) {
+    throw new Error(PHONE_VALIDATION_MESSAGE)
+  }
+
+  return parsed.number
+}
 
 function formatCount(value) {
   return new Intl.NumberFormat().format(Math.round(value || 0))
@@ -3679,6 +3720,7 @@ function SubscriberDailyChart({ title, data, series, valueFormatter = formatCoun
 function SignupPage() {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
+  const [phoneError, setPhoneError] = useState(null)
   const [smsConsent, setSmsConsent] = useState(false)
   const [status, setStatus] = useState(null)
   const [submitting, setSubmitting] = useState(false)
@@ -3718,18 +3760,50 @@ function SignupPage() {
     }
   }, [])
 
+  function validatePhoneField(value) {
+    const nextPhone = String(value || '').trim()
+    if (!nextPhone) {
+      setPhoneError(null)
+      return ''
+    }
+
+    try {
+      const normalizedPhone = normalizePhoneInput(nextPhone)
+      setPhoneError(null)
+      return normalizedPhone
+    } catch (error) {
+      const message = error.message || PHONE_VALIDATION_MESSAGE
+      setPhoneError(message)
+      throw new Error(message)
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault()
 
     const normalizedEmail = email.trim()
-    const normalizedPhone = phone.trim()
+    const trimmedPhone = phone.trim()
+    let normalizedPhone = ''
 
-    if (!normalizedEmail && !normalizedPhone) {
+    if (!normalizedEmail && !trimmedPhone) {
+      setPhoneError(null)
       setStatus({
         tone: 'error',
         message: 'Enter an email address, a phone number, or both before submitting.',
       })
       return
+    }
+
+    if (trimmedPhone) {
+      try {
+        normalizedPhone = validatePhoneField(trimmedPhone)
+      } catch (error) {
+        setStatus({
+          tone: 'error',
+          message: error.message,
+        })
+        return
+      }
     }
 
     if (normalizedPhone && !smsConsent) {
@@ -3738,6 +3812,10 @@ function SignupPage() {
         message: 'Check the SMS consent box before submitting a phone number.',
       })
       return
+    }
+
+    if (normalizedPhone && normalizedPhone !== phone) {
+      setPhone(normalizedPhone)
     }
 
     setSubmitting(true)
@@ -3837,13 +3915,32 @@ function SignupPage() {
                     value={phone}
                     autoComplete="tel"
                     inputMode="tel"
-                    placeholder="+1 555 123 4567"
+                    aria-invalid={phoneError ? 'true' : undefined}
+                    aria-describedby={phoneError ? 'signup-phone-error' : undefined}
+                    placeholder="+1 415 555 2671"
+                    onBlur={(event) => {
+                      if (!event.target.value.trim()) return
+                      try {
+                        const normalizedPhone = validatePhoneField(event.target.value)
+                        if (normalizedPhone !== event.target.value) {
+                          setPhone(normalizedPhone)
+                        }
+                      } catch {
+                        // The inline field error handles invalid values.
+                      }
+                    }}
                     onChange={(event) => {
                       const nextPhone = event.target.value
                       setPhone(nextPhone)
+                      setPhoneError(null)
                       if (!nextPhone.trim()) setSmsConsent(false)
                     }}
                   />
+                  {phoneError ? (
+                    <span id="signup-phone-error" className="signup-field-error">
+                      {phoneError}
+                    </span>
+                  ) : null}
                 </label>
 
                 {hasPhone ? (
@@ -4162,7 +4259,7 @@ function AdminTestAlertPage() {
                         value={phone}
                         autoComplete="tel"
                         inputMode="tel"
-                        placeholder="+1 555 123 4567"
+                        placeholder="+1 415 555 2671"
                         onChange={(event) => setPhone(event.target.value)}
                       />
                     </label>

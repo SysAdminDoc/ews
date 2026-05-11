@@ -1,4 +1,28 @@
 import { HttpError } from "./http.js";
+import { parsePhoneNumberFromString } from "libphonenumber-js/min";
+
+const PHONE_VALIDATION_MESSAGE =
+  "Enter a valid phone number. Use 10 digits for US/Canada, or + and country code for international numbers.";
+
+function getPhoneCandidate(raw, digits, withPlus) {
+  if (withPlus) {
+    return `+${digits}`;
+  }
+
+  if (digits.startsWith("00") && digits.length > 2) {
+    return `+${digits.slice(2)}`;
+  }
+
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+
+  throw new HttpError(400, PHONE_VALIDATION_MESSAGE);
+}
 
 export function normalizeEmail(value) {
   const email = String(value || "").trim().toLowerCase();
@@ -25,19 +49,13 @@ export function normalizePhone(value) {
     throw new HttpError(400, "Enter a valid phone number.");
   }
 
-  if (!withPlus && digits.length === 10) {
-    digits = `1${digits}`;
+  const candidate = getPhoneCandidate(raw, digits, withPlus);
+  const phoneNumber = parsePhoneNumberFromString(candidate);
+  if (!phoneNumber?.isValid()) {
+    throw new HttpError(400, PHONE_VALIDATION_MESSAGE);
   }
 
-  if (!withPlus && digits.length === 11 && !digits.startsWith("1")) {
-    throw new HttpError(400, "Use E.164 format for international phone numbers, for example +442071838750.");
-  }
-
-  if (digits.length < 8 || digits.length > 15) {
-    throw new HttpError(400, "Enter a valid phone number in E.164 format.");
-  }
-
-  return `+${digits}`;
+  return phoneNumber.number;
 }
 
 export function normalizeSignupContacts(payload) {
