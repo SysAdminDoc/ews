@@ -954,6 +954,60 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   background: #e8e8e8 !important;
 }
 
+.messaging-status-card {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #cccccc;
+  background: #ffffff;
+}
+
+.messaging-status-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.messaging-status-heading h3,
+.messaging-status-heading p {
+  margin: 0;
+}
+
+.messaging-status-heading h3 {
+  font-size: 14px;
+}
+
+.messaging-status-heading p {
+  font-size: 12px;
+}
+
+.messaging-status-heading button {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid #999999;
+  background: #ffffff;
+  color: #000000;
+  cursor: pointer;
+}
+
+.messaging-status-heading button:disabled {
+  color: #777777;
+  cursor: wait;
+}
+
+.messaging-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.messaging-status-grid span {
+  padding: 8px;
+  border: 1px solid #cccccc;
+  overflow-wrap: anywhere;
+}
+
 .admin-wide-panel {
   grid-column: 1 / -1;
 }
@@ -1775,6 +1829,7 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   }
 
   .flight-list li,
+  .messaging-status-grid,
   .map-hover-grid {
     grid-template-columns: 1fr;
   }

@@ -3441,6 +3441,17 @@ function formatAdminValue(value) {
   return String(value)
 }
 
+function formatMessagingStatusLabel(status) {
+  if (!status) {
+    return 'Unknown'
+  }
+
+  return String(status)
+    .replaceAll('_', ' ')
+    .toLowerCase()
+    .replace(/^\w/, (letter) => letter.toUpperCase())
+}
+
 function getSubscriberSummary(subscribers) {
   return subscribers.reduce(
     (summary, subscriber) => {
@@ -3879,6 +3890,9 @@ function AdminTestAlertPage() {
   const [confirmAll, setConfirmAll] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [status, setStatus] = useState(null)
+  const [messagingStatus, setMessagingStatus] = useState(null)
+  const [messagingStatusLoading, setMessagingStatusLoading] = useState(false)
+  const [messagingStatusError, setMessagingStatusError] = useState(null)
   const [recentDeliveries, setRecentDeliveries] = useState([])
   const [subscriberRecords, setSubscriberRecords] = useState([])
   const [subscriberLoading, setSubscriberLoading] = useState(false)
@@ -3900,6 +3914,7 @@ function AdminTestAlertPage() {
   useEffect(() => {
     const previousTitle = document.title
     document.title = adminView === 'subscribers' ? 'Subscriber Database' : 'Test Emergency Alert'
+    loadMessagingStatus()
     if (adminView === 'subscribers') {
       loadSubscriberRecords()
     } else {
@@ -3926,6 +3941,23 @@ function AdminTestAlertPage() {
       }
     } catch {
       // The admin page remains usable if the history panel cannot refresh.
+    }
+  }
+
+  async function loadMessagingStatus() {
+    setMessagingStatusLoading(true)
+    setMessagingStatusError(null)
+    try {
+      const response = await fetch('/api/admin/messaging-status', { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Could not load messaging status.')
+      }
+      setMessagingStatus(payload)
+    } catch (error) {
+      setMessagingStatusError(error.message)
+    } finally {
+      setMessagingStatusLoading(false)
     }
   }
 
@@ -4049,6 +4081,47 @@ function AdminTestAlertPage() {
                   <h2 id="admin-test-form-title">Alert Test</h2>
                 </div>
               </div>
+              <section className="messaging-status-card" aria-label="SMS sender status">
+                <div className="messaging-status-heading">
+                  <div>
+                    <h3>SMS Sender</h3>
+                    <p>
+                      {messagingStatusLoading
+                        ? 'Checking Twilio...'
+                        : messagingStatus?.checkedAt
+                          ? `Checked ${new Date(messagingStatus.checkedAt).toLocaleString()}`
+                          : 'Status not loaded'}
+                    </p>
+                  </div>
+                  <button type="button" onClick={loadMessagingStatus} disabled={messagingStatusLoading}>
+                    {messagingStatusLoading ? 'Checking...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {messagingStatusError ? (
+                  <p className="signup-status signup-status-error">{messagingStatusError}</p>
+                ) : messagingStatus ? (
+                  <>
+                    <div className="messaging-status-grid">
+                      <span>Ready: {messagingStatus.readyForSms ? 'yes' : 'no'}</span>
+                      <span>Send method: {formatMessagingStatusLabel(messagingStatus.sendMethod)}</span>
+                      <span>Messaging service: {formatMessagingStatusLabel(messagingStatus.messagingService?.status)}</span>
+                      <span>Sender: {formatAdminValue(messagingStatus.sender?.number)}</span>
+                      <span>Sender found: {formatAdminValue(messagingStatus.sender?.foundInAccount)}</span>
+                      <span>SMS capable: {formatAdminValue(messagingStatus.sender?.smsCapable)}</span>
+                      <span>Toll-free: {formatAdminValue(messagingStatus.sender?.isTollFree)}</span>
+                      <span>
+                        TFV: {formatMessagingStatusLabel(messagingStatus.sender?.tollFreeVerification?.status)}
+                      </span>
+                    </div>
+                    {messagingStatus.blockingIssue ? (
+                      <p className="signup-status signup-status-error">{messagingStatus.blockingIssue}</p>
+                    ) : (
+                      <p className="signup-status signup-status-success">Twilio sender configuration looks ready.</p>
+                    )}
+                  </>
+                ) : null}
+              </section>
               <form className="signup-form" onSubmit={handleSubmit}>
                 <div className="mode-control" role="group" aria-label="Test mode">
                   <button
