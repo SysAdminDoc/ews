@@ -46,11 +46,14 @@ export async function onRequestGet({ request, env }) {
   try {
     const url = new URL(request.url);
     if (url.searchParams.get("view") === "subscribers") {
-      const subscribers = await getAdminSubscriberRecords(env);
+      const subscriberRecords = await getAdminSubscriberRecords(env, {
+        page: url.searchParams.get("page"),
+        pageSize: url.searchParams.get("pageSize"),
+      });
       return jsonResponse(
         {
           ok: true,
-          subscribers,
+          ...subscriberRecords,
         },
         {
           headers: {

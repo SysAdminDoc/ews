@@ -60,6 +60,17 @@ async function remoteD1Query(env, sql, params = []) {
   return result.results || [];
 }
 
+async function queryRows(env, sql, params = []) {
+  if (shouldUseRemoteSubscriberReads(env)) {
+    return remoteD1Query(env, sql, params);
+  }
+
+  const statement = getDb(env).prepare(sql);
+  const query = params.length ? statement.bind(...params) : statement;
+  const { results } = await query.all();
+  return results || [];
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -705,8 +716,134 @@ export async function getRecentAlertDeliveries(env, limit = 25) {
   return results || [];
 }
 
-export async function getAdminSubscriberRecords(env) {
-  const query = `
+function clampAdminSubscriberPage(value) {
+  const page = Math.trunc(Number(value || 1));
+  return Number.isFinite(page) && page > 0 ? page : 1;
+}
+
+function clampAdminSubscriberPageSize(value) {
+  const pageSize = Math.trunc(Number(value || 20));
+  if (!Number.isFinite(pageSize) || pageSize <= 0) {
+    return 20;
+  }
+
+  return Math.min(pageSize, 100);
+}
+
+function mapSubscriberSummary(row = {}) {
+  return {
+    total: Number(row.total || 0),
+    active: Number(row.active || 0),
+    pending_checkout: Number(row.pending_checkout || 0),
+    past_due: Number(row.past_due || 0),
+    canceled: Number(row.canceled || 0),
+    wantsEmail: Number(row.wants_email || 0),
+    wantsSms: Number(row.wants_sms || 0),
+    wantsBoth: Number(row.wants_both || 0),
+  };
+}
+
+function mapSubscriberDailyStats(row) {
+  const active = Number(row.active || 0);
+  return {
+    day: row.day,
+    active,
+    pending: Number(row.pending || 0),
+    canceled: Number(row.canceled || 0),
+    email: Number(row.email || 0),
+    sms: Number(row.sms || 0),
+    both: Number(row.both || 0),
+    grossVolume: active * 5,
+  };
+}
+
+async function mapAdminSubscriberRow(env, row) {
+  const [email, phone] = await Promise.all([
+    decryptString(env, row.email_cipher),
+    decryptString(env, row.phone_cipher),
+  ]);
+
+  return {
+    id: row.id,
+    status: row.status,
+    email,
+    emailHash: row.email_hash,
+    phone,
+    phoneHash: row.phone_hash,
+    wantsEmail: Number(row.wants_email || 0) === 1,
+    wantsSms: Number(row.wants_sms || 0) === 1,
+    smsConsentAt: row.sms_consent_at,
+    smsConsentIpHash: row.sms_consent_ip_hash,
+    smsConsentUserAgentHash: row.sms_consent_user_agent_hash,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    stripeCheckoutSessionId: row.stripe_checkout_session_id,
+    stripeProductId: row.stripe_product_id,
+    stripePriceId: row.stripe_price_id,
+    checkoutUrl: row.checkout_url,
+    checkoutCreatedAt: row.checkout_created_at,
+    checkoutCompletedAt: row.checkout_completed_at,
+    currentPeriodEnd: row.current_period_end,
+    canceledAt: row.canceled_at,
+    contactRedactedAt: row.contact_redacted_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    hasEmailCipher: Boolean(row.email_cipher),
+    hasPhoneCipher: Boolean(row.phone_cipher),
+    deliveryCount: Number(row.delivery_count || 0),
+    emailDeliveryCount: Number(row.email_delivery_count || 0),
+    smsDeliveryCount: Number(row.sms_delivery_count || 0),
+    deliveryErrorCount: Number(row.delivery_error_count || 0),
+    lastDeliveryAt: row.last_delivery_at,
+  };
+}
+
+export async function getAdminSubscriberRecords(env, options = {}) {
+  const page = clampAdminSubscriberPage(options.page);
+  const pageSize = clampAdminSubscriberPageSize(options.pageSize);
+  const offset = (page - 1) * pageSize;
+  const summaryQuery = `
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN status = 'pending_checkout' THEN 1 ELSE 0 END) AS pending_checkout,
+          SUM(CASE WHEN status = 'past_due' THEN 1 ELSE 0 END) AS past_due,
+          SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled,
+          SUM(CASE WHEN wants_email = 1 THEN 1 ELSE 0 END) AS wants_email,
+          SUM(CASE WHEN wants_sms = 1 THEN 1 ELSE 0 END) AS wants_sms,
+          SUM(CASE WHEN wants_email = 1 AND wants_sms = 1 THEN 1 ELSE 0 END) AS wants_both
+        FROM notification_signups
+      `;
+  const dailyStatsQuery = `
+        SELECT
+          day,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN status = 'pending_checkout' THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled,
+          SUM(CASE WHEN wants_email = 1 THEN 1 ELSE 0 END) AS email,
+          SUM(CASE WHEN wants_sms = 1 THEN 1 ELSE 0 END) AS sms,
+          SUM(CASE WHEN wants_email = 1 AND wants_sms = 1 THEN 1 ELSE 0 END) AS both
+        FROM (
+          SELECT
+            status,
+            wants_email,
+            wants_sms,
+            SUBSTR(
+              CASE
+                WHEN status = 'active' THEN COALESCE(checkout_completed_at, checkout_created_at, created_at)
+                WHEN status = 'canceled' THEN COALESCE(canceled_at, updated_at, created_at)
+                ELSE COALESCE(checkout_created_at, created_at, updated_at)
+              END,
+              1,
+              10
+            ) AS day
+          FROM notification_signups
+        )
+        WHERE day IS NOT NULL AND day != ''
+        GROUP BY day
+        ORDER BY day ASC
+      `;
+  const subscribersQuery = `
         SELECT
           s.*,
           COUNT(d.id) AS delivery_count,
@@ -714,7 +851,20 @@ export async function getAdminSubscriberRecords(env) {
           SUM(CASE WHEN d.channel = 'sms' THEN 1 ELSE 0 END) AS sms_delivery_count,
           SUM(CASE WHEN d.status IN ('failed', 'undelivered') THEN 1 ELSE 0 END) AS delivery_error_count,
           MAX(COALESCE(d.updated_at, d.created_at)) AS last_delivery_at
-        FROM notification_signups s
+        FROM (
+          SELECT *
+          FROM notification_signups
+          ORDER BY
+            CASE status
+              WHEN 'active' THEN 0
+              WHEN 'pending_checkout' THEN 1
+              WHEN 'past_due' THEN 2
+              ELSE 3
+            END,
+            updated_at DESC,
+            id ASC
+          LIMIT ? OFFSET ?
+        ) s
         LEFT JOIN notification_deliveries d ON d.subscriber_id = s.id
         GROUP BY s.id
         ORDER BY
@@ -724,54 +874,26 @@ export async function getAdminSubscriberRecords(env) {
             WHEN 'past_due' THEN 2
             ELSE 3
           END,
-          s.updated_at DESC
+          s.updated_at DESC,
+          s.id ASC
       `;
-  const results = shouldUseRemoteSubscriberReads(env)
-    ? await remoteD1Query(env, query)
-    : (await getDb(env).prepare(query).all()).results;
 
-  return Promise.all(
-    (results || []).map(async (row) => {
-      const [email, phone] = await Promise.all([
-        decryptString(env, row.email_cipher),
-        decryptString(env, row.phone_cipher),
-      ]);
+  const [summaryRows, dailyStatsRows, subscriberRows] = await Promise.all([
+    queryRows(env, summaryQuery),
+    queryRows(env, dailyStatsQuery),
+    queryRows(env, subscribersQuery, [pageSize, offset]),
+  ]);
+  const summary = mapSubscriberSummary(summaryRows[0]);
+  const subscribers = await Promise.all(subscriberRows.map((row) => mapAdminSubscriberRow(env, row)));
 
-      return {
-        id: row.id,
-        status: row.status,
-        email,
-        emailHash: row.email_hash,
-        phone,
-        phoneHash: row.phone_hash,
-        wantsEmail: Number(row.wants_email || 0) === 1,
-        wantsSms: Number(row.wants_sms || 0) === 1,
-        smsConsentAt: row.sms_consent_at,
-        smsConsentIpHash: row.sms_consent_ip_hash,
-        smsConsentUserAgentHash: row.sms_consent_user_agent_hash,
-        stripeCustomerId: row.stripe_customer_id,
-        stripeSubscriptionId: row.stripe_subscription_id,
-        stripeCheckoutSessionId: row.stripe_checkout_session_id,
-        stripeProductId: row.stripe_product_id,
-        stripePriceId: row.stripe_price_id,
-        checkoutUrl: row.checkout_url,
-        checkoutCreatedAt: row.checkout_created_at,
-        checkoutCompletedAt: row.checkout_completed_at,
-        currentPeriodEnd: row.current_period_end,
-        canceledAt: row.canceled_at,
-        contactRedactedAt: row.contact_redacted_at,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        hasEmailCipher: Boolean(row.email_cipher),
-        hasPhoneCipher: Boolean(row.phone_cipher),
-        deliveryCount: Number(row.delivery_count || 0),
-        emailDeliveryCount: Number(row.email_delivery_count || 0),
-        smsDeliveryCount: Number(row.sms_delivery_count || 0),
-        deliveryErrorCount: Number(row.delivery_error_count || 0),
-        lastDeliveryAt: row.last_delivery_at,
-      };
-    }),
-  );
+  return {
+    subscribers,
+    summary,
+    dailyStats: dailyStatsRows.map(mapSubscriberDailyStats),
+    page,
+    pageSize,
+    total: summary.total,
+  };
 }
 
 export async function getSubscriberForCustomerPortal(env, subscriberId) {

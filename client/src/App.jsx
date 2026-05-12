@@ -3500,6 +3500,19 @@ function formatMessagingStatusLabel(status) {
     .replace(/^\w/, (letter) => letter.toUpperCase())
 }
 
+function createEmptySubscriberSummary() {
+  return {
+    total: 0,
+    active: 0,
+    pending_checkout: 0,
+    past_due: 0,
+    canceled: 0,
+    wantsEmail: 0,
+    wantsSms: 0,
+    wantsBoth: 0,
+  }
+}
+
 function getSubscriberSummary(subscribers) {
   return subscribers.reduce(
     (summary, subscriber) => {
@@ -3516,16 +3529,7 @@ function getSubscriberSummary(subscribers) {
       }
       return summary
     },
-    {
-      total: 0,
-      active: 0,
-      pending_checkout: 0,
-      past_due: 0,
-      canceled: 0,
-      wantsEmail: 0,
-      wantsSms: 0,
-      wantsBoth: 0,
-    },
+    createEmptySubscriberSummary(),
   )
 }
 
@@ -3641,6 +3645,40 @@ function buildSubscriberDailyStats(subscribers) {
   }
 
   return Array.from(byDay.values()).sort((left, right) => left.day.localeCompare(right.day))
+}
+
+function normalizeSubscriberSummary(value) {
+  const summary = {
+    ...createEmptySubscriberSummary(),
+    ...(value || {}),
+  }
+  return {
+    total: Number(summary.total || 0),
+    active: Number(summary.active || 0),
+    pending_checkout: Number(summary.pending_checkout || 0),
+    past_due: Number(summary.past_due || 0),
+    canceled: Number(summary.canceled || 0),
+    wantsEmail: Number(summary.wantsEmail || 0),
+    wantsSms: Number(summary.wantsSms || 0),
+    wantsBoth: Number(summary.wantsBoth || 0),
+  }
+}
+
+function normalizeSubscriberDailyStats(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.map((item) => ({
+    day: item.day,
+    active: Number(item.active || 0),
+    pending: Number(item.pending || 0),
+    canceled: Number(item.canceled || 0),
+    email: Number(item.email || 0),
+    sms: Number(item.sms || 0),
+    both: Number(item.both || 0),
+    grossVolume: Number(item.grossVolume || 0),
+  }))
 }
 
 function formatGrossVolume(value) {
@@ -4007,36 +4045,70 @@ function AdminTestAlertPage() {
   const [messagingStatusError, setMessagingStatusError] = useState(null)
   const [recentDeliveries, setRecentDeliveries] = useState([])
   const [subscriberRecords, setSubscriberRecords] = useState([])
+  const [subscriberSummary, setSubscriberSummary] = useState(() => createEmptySubscriberSummary())
+  const [subscriberDailyStats, setSubscriberDailyStats] = useState([])
+  const [subscriberTotal, setSubscriberTotal] = useState(0)
+  const [subscriberPageSize, setSubscriberPageSize] = useState(SUBSCRIBERS_PER_PAGE)
   const [subscriberLoading, setSubscriberLoading] = useState(false)
   const [subscriberStatus, setSubscriberStatus] = useState(null)
   const [subscriberPage, setSubscriberPage] = useState(1)
-  const subscriberSummary = useMemo(() => getSubscriberSummary(subscriberRecords), [subscriberRecords])
-  const subscriberDailyStats = useMemo(() => buildSubscriberDailyStats(subscriberRecords), [subscriberRecords])
-  const subscriberPageCount = Math.max(1, Math.ceil(subscriberRecords.length / SUBSCRIBERS_PER_PAGE))
+  const subscriberPageCount = Math.max(1, Math.ceil(subscriberTotal / Math.max(1, subscriberPageSize)))
   const normalizedSubscriberPage = clamp(subscriberPage, 1, subscriberPageCount)
-  const subscriberPageStartIndex = (normalizedSubscriberPage - 1) * SUBSCRIBERS_PER_PAGE
-  const subscriberPageRecords = subscriberRecords.slice(
-    subscriberPageStartIndex,
-    subscriberPageStartIndex + SUBSCRIBERS_PER_PAGE,
-  )
-  const subscriberPageEndIndex = Math.min(subscriberRecords.length, subscriberPageStartIndex + subscriberPageRecords.length)
+  const subscriberPageStartIndex = subscriberRecords.length ? (normalizedSubscriberPage - 1) * subscriberPageSize : 0
+  const subscriberPageEndIndex = subscriberRecords.length ? subscriberPageStartIndex + subscriberRecords.length : 0
 
   useInitialLoaderDismissed()
+
+  const loadSubscriberRecords = useCallback(async (page = 1) => {
+    const targetPage = Math.max(1, Math.trunc(Number(page || 1)))
+    const params = new URLSearchParams({
+      view: 'subscribers',
+      page: String(targetPage),
+      pageSize: String(SUBSCRIBERS_PER_PAGE),
+    })
+    setSubscriberLoading(true)
+    setSubscriberStatus(null)
+    try {
+      const response = await fetch(`/api/admin/test-alert?${params.toString()}`, { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !Array.isArray(payload.subscribers)) {
+        throw new Error(payload.error || 'Could not load subscriber database.')
+      }
+      setSubscriberRecords(payload.subscribers)
+      setSubscriberSummary(normalizeSubscriberSummary(payload.summary || getSubscriberSummary(payload.subscribers)))
+      setSubscriberDailyStats(
+        payload.dailyStats ? normalizeSubscriberDailyStats(payload.dailyStats) : buildSubscriberDailyStats(payload.subscribers),
+      )
+      setSubscriberTotal(Number(payload.total || payload.summary?.total || payload.subscribers.length || 0))
+      setSubscriberPageSize(Number(payload.pageSize || SUBSCRIBERS_PER_PAGE))
+      setSubscriberPage(Number(payload.page || targetPage))
+    } catch (error) {
+      setSubscriberStatus({
+        tone: 'error',
+        message: error.message,
+      })
+    } finally {
+      setSubscriberLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     const previousTitle = document.title
     document.title = adminView === 'subscribers' ? 'Subscriber Database' : 'Test Emergency Alert'
     loadMessagingStatus()
-    if (adminView === 'subscribers') {
-      loadSubscriberRecords()
-    } else {
-      loadRecentDeliveries()
-    }
 
     return () => {
       document.title = previousTitle
     }
   }, [adminView])
+
+  useEffect(() => {
+    if (adminView === 'subscribers') {
+      loadSubscriberRecords(normalizedSubscriberPage)
+    } else {
+      loadRecentDeliveries()
+    }
+  }, [adminView, loadSubscriberRecords, normalizedSubscriberPage])
 
   useEffect(() => {
     if (subscriberPage !== normalizedSubscriberPage) {
@@ -4070,27 +4142,6 @@ function AdminTestAlertPage() {
       setMessagingStatusError(error.message)
     } finally {
       setMessagingStatusLoading(false)
-    }
-  }
-
-  async function loadSubscriberRecords() {
-    setSubscriberLoading(true)
-    setSubscriberStatus(null)
-    try {
-      const response = await fetch('/api/admin/test-alert?view=subscribers', { cache: 'no-store' })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok || !Array.isArray(payload.subscribers)) {
-        throw new Error(payload.error || 'Could not load subscriber database.')
-      }
-      setSubscriberRecords(payload.subscribers)
-      setSubscriberPage(1)
-    } catch (error) {
-      setSubscriberStatus({
-        tone: 'error',
-        message: error.message,
-      })
-    } finally {
-      setSubscriberLoading(false)
     }
   }
 
@@ -4330,7 +4381,12 @@ function AdminTestAlertPage() {
                 <div>
                   <h2 id="subscriber-table-title">Subscriber Database</h2>
                 </div>
-                <button className="signup-submit" type="button" onClick={loadSubscriberRecords} disabled={subscriberLoading}>
+                <button
+                  className="signup-submit"
+                  type="button"
+                  onClick={() => loadSubscriberRecords(normalizedSubscriberPage)}
+                  disabled={subscriberLoading}
+                >
                   {subscriberLoading ? 'Loading...' : 'Refresh'}
                 </button>
               </div>
@@ -4384,7 +4440,7 @@ function AdminTestAlertPage() {
                 <>
                   <div className="subscriber-pagination" aria-label="Subscriber pagination">
                     <span>
-                      Showing {subscriberPageStartIndex + 1}-{subscriberPageEndIndex} of {subscriberRecords.length}
+                      Showing {subscriberPageStartIndex + 1}-{subscriberPageEndIndex} of {subscriberTotal}
                     </span>
                     <div>
                       <button
@@ -4419,7 +4475,7 @@ function AdminTestAlertPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {subscriberPageRecords.map((subscriber) => (
+                        {subscriberRecords.map((subscriber) => (
                           <tr key={subscriber.id}>
                             <td>
                               <strong>{formatAdminValue(subscriber.email || subscriber.phone)}</strong>
