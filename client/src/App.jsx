@@ -3537,10 +3537,15 @@ function getSubscriberFields(subscriber) {
   return [
     ['id', subscriber.id],
     ['status', subscriber.status],
+    ['source', subscriber.source],
     ['email', subscriber.email],
     ['emailHash', subscriber.emailHash],
+    ['accountEmail', subscriber.accountEmail],
+    ['accountEmailHash', subscriber.accountEmailHash],
+    ['accountEmailSource', subscriber.accountEmailSource],
     ['phone', subscriber.phone],
     ['phoneHash', subscriber.phoneHash],
+    ['phoneCountry', subscriber.phoneCountry],
     ['wantsEmail', subscriber.wantsEmail],
     ['wantsSms', subscriber.wantsSms],
     ['smsConsentAt', subscriber.smsConsentAt],
@@ -3557,9 +3562,18 @@ function getSubscriberFields(subscriber) {
     ['currentPeriodEnd', subscriber.currentPeriodEnd],
     ['canceledAt', subscriber.canceledAt],
     ['contactRedactedAt', subscriber.contactRedactedAt],
+    ['smsOptedOutAt', subscriber.smsOptedOutAt],
+    ['smsOptOutSource', subscriber.smsOptOutSource],
+    ['emailOptedOutAt', subscriber.emailOptedOutAt],
+    ['emailOptOutSource', subscriber.emailOptOutSource],
+    ['welcomeEmailSentAt', subscriber.welcomeEmailSentAt],
+    ['welcomeSmsSentAt', subscriber.welcomeSmsSentAt],
+    ['stripeCancelAtPeriodEnd', subscriber.stripeCancelAtPeriodEnd],
+    ['manualNote', subscriber.manualNote],
     ['createdAt', subscriber.createdAt],
     ['updatedAt', subscriber.updatedAt],
     ['hasEmailCipher', subscriber.hasEmailCipher],
+    ['hasAccountEmailCipher', subscriber.hasAccountEmailCipher],
     ['hasPhoneCipher', subscriber.hasPhoneCipher],
     ['deliveryCount', subscriber.deliveryCount],
     ['emailDeliveryCount', subscriber.emailDeliveryCount],
@@ -4032,8 +4046,270 @@ function SignupPage() {
   )
 }
 
+function ManageSubscriptionPage() {
+  const params = new URLSearchParams(window.location.search)
+  const subscriberToken = params.get('token') || ''
+  const subscriberId = params.get('subscriber') || ''
+  const [subscriber, setSubscriber] = useState(null)
+  const [accountEmail, setAccountEmail] = useState('')
+  const [alertEmail, setAlertEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [wantsEmail, setWantsEmail] = useState(false)
+  const [wantsSms, setWantsSms] = useState(false)
+  const [renewSubscription, setRenewSubscription] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [pendingAction, setPendingAction] = useState(null)
+  const [status, setStatus] = useState(null)
+
+  useInitialLoaderDismissed()
+
+  useEffect(() => {
+    const previousTitle = document.title
+    document.title = 'Manage Apocalypse EWS'
+
+    async function loadSubscriber() {
+      if (!subscriberId || !subscriberToken) {
+        setStatus({ tone: 'error', message: 'This management link is missing a token.' })
+        setLoading(false)
+        return
+      }
+
+      try {
+        const searchParams = new URLSearchParams({ subscriber: subscriberId, token: subscriberToken })
+        const response = await fetch(`/api/manage/subscriber?${searchParams.toString()}`, { cache: 'no-store' })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok || !payload.subscriber) {
+          throw new Error(payload.error || 'Could not load notification settings.')
+        }
+        setSubscriber(payload.subscriber)
+        setAccountEmail(payload.subscriber.accountEmail || '')
+        setAlertEmail(payload.subscriber.email || '')
+        setPhone(payload.subscriber.phone || '')
+        setWantsEmail(Boolean(payload.subscriber.wantsEmail))
+        setWantsSms(Boolean(payload.subscriber.wantsSms))
+        setRenewSubscription(!payload.subscriber.stripeCancelAtPeriodEnd)
+      } catch (error) {
+        setStatus({ tone: 'error', message: error.message })
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadSubscriber()
+    return () => {
+      document.title = previousTitle
+    }
+  }, [subscriberId, subscriberToken])
+
+  function applySubscriber(nextSubscriber) {
+    setSubscriber(nextSubscriber)
+    setAccountEmail(nextSubscriber.accountEmail || '')
+    setAlertEmail(nextSubscriber.email || '')
+    setPhone(nextSubscriber.phone || '')
+    setWantsEmail(Boolean(nextSubscriber.wantsEmail))
+    setWantsSms(Boolean(nextSubscriber.wantsSms))
+    setRenewSubscription(!nextSubscriber.stripeCancelAtPeriodEnd)
+  }
+
+  async function postManagementAction(action, body = {}) {
+    setPendingAction(action)
+    setStatus({ tone: 'success', message: 'Saving...' })
+    try {
+      const response = await fetch('/api/manage/subscriber', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          subscriber: subscriberId,
+          token: subscriberToken,
+          action,
+          ...body,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.subscriber) {
+        throw new Error(payload.error || 'Could not update notification settings.')
+      }
+      applySubscriber(payload.subscriber)
+      setStatus({ tone: 'success', message: 'Settings updated.' })
+    } catch (error) {
+      setStatus({ tone: 'error', message: error.message })
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  function handleSave(event) {
+    event.preventDefault()
+
+    const trimmedPhone = phone.trim()
+    let normalizedPhone = ''
+    if (trimmedPhone) {
+      try {
+        normalizedPhone = normalizePhoneInput(trimmedPhone)
+      } catch (error) {
+        setStatus({ tone: 'error', message: error.message })
+        return
+      }
+      if (!isSupportedSmsCountry(normalizedPhone)) {
+        setStatus({ tone: 'error', message: 'SMS alerts currently support US and Canada phone numbers only.' })
+        return
+      }
+    }
+
+    postManagementAction('save', {
+      accountEmail: accountEmail.trim(),
+      email: alertEmail.trim(),
+      phone: normalizedPhone,
+      wantsEmail,
+      wantsSms,
+      renewSubscription,
+    })
+  }
+
+  function handleDeleteAccount() {
+    const confirmed = window.confirm(
+      'Delete your account? This will stop all notifications and remove your saved contact information.',
+    )
+    if (!confirmed) {
+      return
+    }
+
+    postManagementAction('delete_account')
+  }
+
+  return (
+    <>
+      <div className="background-wallpaper" style={{ backgroundImage: `url("${BACKGROUND_URL}")` }} aria-hidden="true" />
+      <main className="app-shell signup-shell">
+        <section className="focus-grid signup-grid">
+          <section className="panel hero-copy-panel signup-copy-panel">
+            <h1>Manage Notifications</h1>
+            <p className="hero-caption">Apocalypse Early Warning System notification settings.</p>
+            <p className="hero-credit">
+              <a href="/">Dashboard</a>
+            </p>
+          </section>
+
+          <section className="panel signup-panel" aria-labelledby="manage-form-title">
+            <div className="panel-header">
+              <div>
+                <h2 id="manage-form-title">Settings</h2>
+              </div>
+            </div>
+
+            {loading ? <p className="signup-status signup-status-success">Loading...</p> : null}
+            {status ? (
+              <p className={`signup-status signup-status-${status.tone}`} role="status">
+                {status.message}
+              </p>
+            ) : null}
+
+            {subscriber ? (
+              <>
+                <form className="signup-form" onSubmit={handleSave}>
+                  <label className="signup-field">
+                    <span>Account email</span>
+                    <input
+                      type="email"
+                      value={accountEmail}
+                      autoComplete="email"
+                      disabled={subscriber.status === 'canceled'}
+                      onChange={(event) => setAccountEmail(event.target.value)}
+                    />
+                  </label>
+
+                  <label className="signup-field">
+                    <span>Alert email</span>
+                    <input
+                      type="email"
+                      value={alertEmail}
+                      autoComplete="email"
+                      disabled={subscriber.status === 'canceled'}
+                      onChange={(event) => setAlertEmail(event.target.value)}
+                    />
+                  </label>
+
+                  <label className="signup-field">
+                    <span>Phone number</span>
+                    <input
+                      type="tel"
+                      value={phone}
+                      autoComplete="tel"
+                      inputMode="tel"
+                      disabled={subscriber.status === 'canceled'}
+                      onChange={(event) => setPhone(event.target.value)}
+                    />
+                  </label>
+
+                  <label className="signup-consent">
+                    <input
+                      type="checkbox"
+                      checked={wantsEmail}
+                      disabled={subscriber.status === 'canceled'}
+                      onChange={(event) => setWantsEmail(event.target.checked)}
+                    />
+                    <span>Email alerts enabled</span>
+                  </label>
+
+                  <label className="signup-consent">
+                    <input
+                      type="checkbox"
+                      checked={wantsSms}
+                      disabled={subscriber.status === 'canceled'}
+                      onChange={(event) => setWantsSms(event.target.checked)}
+                    />
+                    <span>SMS alerts enabled</span>
+                  </label>
+
+                  {subscriber.hasStripeSubscription ? (
+                    <label className="signup-consent">
+                      <input
+                        type="checkbox"
+                        checked={renewSubscription}
+                        disabled={subscriber.status === 'canceled'}
+                        onChange={(event) => setRenewSubscription(event.target.checked)}
+                      />
+                      <span>Renew subscription</span>
+                    </label>
+                  ) : null}
+
+                  <button className="signup-submit" type="submit" disabled={Boolean(pendingAction) || subscriber.status === 'canceled'}>
+                    {pendingAction === 'save' ? 'Saving...' : 'Save Settings'}
+                  </button>
+                </form>
+
+                {subscriber.source === 'manual' && subscriber.status !== 'canceled' ? (
+                  <button
+                    className="danger-button"
+                    type="button"
+                    disabled={Boolean(pendingAction)}
+                    onClick={handleDeleteAccount}
+                  >
+                    {pendingAction === 'delete_account' ? 'Deleting...' : 'Delete Account'}
+                  </button>
+                ) : null}
+
+                <div className="manual-result" aria-label="Current notification settings">
+                  <span>Status: {formatAdminValue(subscriber.status)}</span>
+                  <span>Source: {formatAdminValue(subscriber.source)}</span>
+                  <span>SMS country: {formatAdminValue(subscriber.phoneCountryName)}</span>
+                  {subscriber.hasStripeSubscription ? (
+                    <span>Renews: {formatAdminValue(!subscriber.stripeCancelAtPeriodEnd)}</span>
+                  ) : null}
+                  {subscriber.stripeBillingPortalUrl ? <a href={subscriber.stripeBillingPortalUrl}>Stripe billing portal</a> : null}
+                </div>
+              </>
+            ) : null}
+          </section>
+        </section>
+      </main>
+    </>
+  )
+}
+
 function AdminTestAlertPage() {
-  const adminView = window.location.pathname.replace(/\/+$/, '') === '/admin/subscribers' ? 'subscribers' : 'test'
+  const adminPath = window.location.pathname.replace(/\/+$/, '')
+  const adminView = adminPath === '/admin/subscribers' ? 'subscribers' : adminPath === '/admin/manual' ? 'manual' : 'test'
   const [mode, setMode] = useState('single')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
@@ -4052,6 +4328,21 @@ function AdminTestAlertPage() {
   const [subscriberLoading, setSubscriberLoading] = useState(false)
   const [subscriberStatus, setSubscriberStatus] = useState(null)
   const [subscriberPage, setSubscriberPage] = useState(1)
+  const [manualAccountEmail, setManualAccountEmail] = useState('')
+  const [manualAlertEmail, setManualAlertEmail] = useState('')
+  const [manualPhone, setManualPhone] = useState('')
+  const [manualWantsEmail, setManualWantsEmail] = useState(true)
+  const [manualWantsSms, setManualWantsSms] = useState(true)
+  const [manualSmsConsent, setManualSmsConsent] = useState(false)
+  const [manualNote, setManualNote] = useState('')
+  const [manualSubmitting, setManualSubmitting] = useState(false)
+  const [manualStatus, setManualStatus] = useState(null)
+  const [manualResult, setManualResult] = useState(null)
+  const [welcomeSubscriberId, setWelcomeSubscriberId] = useState('')
+  const [welcomeEmail, setWelcomeEmail] = useState(true)
+  const [welcomeSms, setWelcomeSms] = useState(true)
+  const [welcomeSubmitting, setWelcomeSubmitting] = useState(false)
+  const [welcomeStatus, setWelcomeStatus] = useState(null)
   const subscriberPageCount = Math.max(1, Math.ceil(subscriberTotal / Math.max(1, subscriberPageSize)))
   const normalizedSubscriberPage = clamp(subscriberPage, 1, subscriberPageCount)
   const subscriberPageStartIndex = subscriberRecords.length ? (normalizedSubscriberPage - 1) * subscriberPageSize : 0
@@ -4094,7 +4385,8 @@ function AdminTestAlertPage() {
 
   useEffect(() => {
     const previousTitle = document.title
-    document.title = adminView === 'subscribers' ? 'Subscriber Database' : 'Test Emergency Alert'
+    document.title =
+      adminView === 'subscribers' ? 'Subscriber Database' : adminView === 'manual' ? 'Manual Subscriber' : 'Test Emergency Alert'
     loadMessagingStatus()
 
     return () => {
@@ -4105,7 +4397,7 @@ function AdminTestAlertPage() {
   useEffect(() => {
     if (adminView === 'subscribers') {
       loadSubscriberRecords(normalizedSubscriberPage)
-    } else {
+    } else if (adminView === 'test') {
       loadRecentDeliveries()
     }
   }, [adminView, loadSubscriberRecords, normalizedSubscriberPage])
@@ -4204,6 +4496,124 @@ function AdminTestAlertPage() {
     }
   }
 
+  async function handleManualSubmit(event) {
+    event.preventDefault()
+
+    const trimmedAccountEmail = manualAccountEmail.trim()
+    const trimmedAlertEmail = manualAlertEmail.trim()
+    const trimmedPhone = manualPhone.trim()
+    let normalizedPhone = ''
+
+    if (!trimmedAccountEmail) {
+      setManualStatus({ tone: 'error', message: 'Enter an account email address.' })
+      return
+    }
+
+    if (trimmedPhone) {
+      try {
+        normalizedPhone = normalizePhoneInput(trimmedPhone)
+      } catch (error) {
+        setManualStatus({ tone: 'error', message: error.message })
+        return
+      }
+
+      if (!isSupportedSmsCountry(normalizedPhone)) {
+        setManualStatus({ tone: 'error', message: 'Manual SMS subscribers must use a US or Canada phone number.' })
+        return
+      }
+    }
+
+    if (manualWantsSms && !normalizedPhone) {
+      setManualStatus({ tone: 'error', message: 'Enter a phone number before enabling SMS.' })
+      return
+    }
+
+    if (manualWantsSms && !manualSmsConsent) {
+      setManualStatus({ tone: 'error', message: 'Confirm SMS consent before enabling SMS.' })
+      return
+    }
+
+    setManualSubmitting(true)
+    setManualStatus({ tone: 'success', message: 'Creating manual subscriber...' })
+    setManualResult(null)
+
+    try {
+      const response = await fetch('/api/admin/subscribers', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_manual',
+          accountEmail: trimmedAccountEmail,
+          email: trimmedAlertEmail || trimmedAccountEmail,
+          phone: normalizedPhone,
+          wantsEmail: manualWantsEmail,
+          wantsSms: manualWantsSms,
+          smsConsent: manualSmsConsent,
+          manualNote: manualNote.trim(),
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Could not create manual subscriber.')
+      }
+
+      setManualResult(payload.subscriber)
+      setWelcomeSubscriberId(payload.subscriber?.id || '')
+      setManualStatus({ tone: 'success', message: `Manual subscriber created: ${payload.subscriber?.id}` })
+    } catch (error) {
+      setManualStatus({ tone: 'error', message: error.message })
+    } finally {
+      setManualSubmitting(false)
+    }
+  }
+
+  async function sendSignupConfirmation(subscriberId = welcomeSubscriberId) {
+    const trimmedSubscriberId = String(subscriberId || '').trim()
+    if (!trimmedSubscriberId) {
+      setWelcomeStatus({ tone: 'error', message: 'Enter a subscriber ID.' })
+      return
+    }
+
+    if (!welcomeEmail && !welcomeSms) {
+      setWelcomeStatus({ tone: 'error', message: 'Choose email, SMS, or both.' })
+      return
+    }
+
+    setWelcomeSubmitting(true)
+    setWelcomeStatus({ tone: 'success', message: 'Sending signup confirmation...' })
+
+    try {
+      const response = await fetch('/api/admin/subscribers', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'send_signup_confirmation',
+          subscriberId: trimmedSubscriberId,
+          email: welcomeEmail,
+          sms: welcomeSms,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.error || 'Could not send signup confirmation.')
+      }
+      const result = payload.result || {}
+      setWelcomeStatus({
+        tone: result.ok ? 'success' : 'error',
+        message: `Confirmation ${result.alertId} completed. Email accepted: ${result.emailSentCount || 0}. SMS accepted: ${
+          result.smsSentCount || 0
+        }. Errors: ${result.errorCount || 0}.`,
+      })
+      if (payload.subscriber) {
+        setManualResult(payload.subscriber)
+      }
+    } catch (error) {
+      setWelcomeStatus({ tone: 'error', message: error.message })
+    } finally {
+      setWelcomeSubmitting(false)
+    }
+  }
+
   return (
     <>
       <div className="background-wallpaper" style={{ backgroundImage: `url("${BACKGROUND_URL}")` }} aria-hidden="true" />
@@ -4228,6 +4638,13 @@ function AdminTestAlertPage() {
                 aria-current={adminView === 'subscribers' ? 'page' : undefined}
               >
                 Subscribers
+              </a>
+              <a
+                className={adminView === 'manual' ? 'admin-tab-active' : ''}
+                href="/admin/manual"
+                aria-current={adminView === 'manual' ? 'page' : undefined}
+              >
+                Manual
               </a>
             </nav>
             <p className="hero-credit">
@@ -4377,6 +4794,161 @@ function AdminTestAlertPage() {
                 </div>
               ) : null}
             </section>
+          ) : adminView === 'manual' ? (
+            <section className="panel signup-panel" aria-labelledby="manual-subscriber-title">
+              <div className="panel-header">
+                <div>
+                  <h2 id="manual-subscriber-title">Manual Subscriber</h2>
+                </div>
+              </div>
+
+              <form className="signup-form" onSubmit={handleManualSubmit}>
+                <label className="signup-field">
+                  <span>Account email</span>
+                  <input
+                    type="email"
+                    value={manualAccountEmail}
+                    autoComplete="email"
+                    placeholder="you@example.com"
+                    onChange={(event) => setManualAccountEmail(event.target.value)}
+                  />
+                </label>
+
+                <label className="signup-field">
+                  <span>Alert email</span>
+                  <input
+                    type="email"
+                    value={manualAlertEmail}
+                    autoComplete="email"
+                    placeholder="you@example.com"
+                    onChange={(event) => setManualAlertEmail(event.target.value)}
+                  />
+                </label>
+
+                <label className="signup-field">
+                  <span>Phone number</span>
+                  <input
+                    type="tel"
+                    value={manualPhone}
+                    autoComplete="tel"
+                    inputMode="tel"
+                    placeholder="+1 415 555 2671"
+                    onChange={(event) => setManualPhone(event.target.value)}
+                  />
+                </label>
+
+                <label className="signup-field">
+                  <span>Note</span>
+                  <input
+                    type="text"
+                    value={manualNote}
+                    placeholder="testing"
+                    onChange={(event) => setManualNote(event.target.value)}
+                  />
+                </label>
+
+                <label className="signup-consent">
+                  <input
+                    type="checkbox"
+                    checked={manualWantsEmail}
+                    onChange={(event) => setManualWantsEmail(event.target.checked)}
+                  />
+                  <span>Email alerts enabled</span>
+                </label>
+
+                <label className="signup-consent">
+                  <input
+                    type="checkbox"
+                    checked={manualWantsSms}
+                    onChange={(event) => setManualWantsSms(event.target.checked)}
+                  />
+                  <span>SMS alerts enabled</span>
+                </label>
+
+                <label className="signup-consent">
+                  <input
+                    type="checkbox"
+                    checked={manualSmsConsent}
+                    onChange={(event) => setManualSmsConsent(event.target.checked)}
+                  />
+                  <span>SMS consent confirmed</span>
+                </label>
+
+                <button className="signup-submit" type="submit" disabled={manualSubmitting}>
+                  {manualSubmitting ? 'Creating...' : 'Create Manual Subscriber'}
+                </button>
+
+                {manualStatus ? (
+                  <p className={`signup-status signup-status-${manualStatus.tone}`} role="status">
+                    {manualStatus.message}
+                  </p>
+                ) : null}
+              </form>
+
+              {manualResult ? (
+                <div className="manual-result" aria-label="Manual subscriber result">
+                  <strong>{manualResult.id}</strong>
+                  <span>Account: {formatAdminValue(manualResult.accountEmail)}</span>
+                  <span>Alert email: {formatAdminValue(manualResult.email)}</span>
+                  <span>Phone: {formatAdminValue(manualResult.phone)}</span>
+                  <span>Email alerts: {formatAdminValue(manualResult.wantsEmail)}</span>
+                  <span>SMS alerts: {formatAdminValue(manualResult.wantsSms)}</span>
+                  {manualResult.managementUrl ? <a href={manualResult.managementUrl}>Management link</a> : null}
+                </div>
+              ) : null}
+
+              <form
+                className="signup-form admin-notify-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  sendSignupConfirmation()
+                }}
+              >
+                <div className="panel-header">
+                  <div>
+                    <h2>Signup Confirmation</h2>
+                  </div>
+                </div>
+
+                <label className="signup-field">
+                  <span>Subscriber ID</span>
+                  <input
+                    type="text"
+                    value={welcomeSubscriberId}
+                    placeholder="subscriber uuid"
+                    onChange={(event) => setWelcomeSubscriberId(event.target.value)}
+                  />
+                </label>
+
+                <label className="signup-consent">
+                  <input
+                    type="checkbox"
+                    checked={welcomeEmail}
+                    onChange={(event) => setWelcomeEmail(event.target.checked)}
+                  />
+                  <span>Send email</span>
+                </label>
+
+                <label className="signup-consent">
+                  <input
+                    type="checkbox"
+                    checked={welcomeSms}
+                    onChange={(event) => setWelcomeSms(event.target.checked)}
+                  />
+                  <span>Send SMS</span>
+                </label>
+
+                <button className="signup-submit" type="submit" disabled={welcomeSubmitting}>
+                  {welcomeSubmitting ? 'Sending...' : 'Send Signup Confirmation'}
+                </button>
+
+                {welcomeStatus ? (
+                  <p className={`signup-status signup-status-${welcomeStatus.tone}`} role="status">
+                    {welcomeStatus.message}
+                  </p>
+                ) : null}
+              </form>
+            </section>
           ) : (
             <section className="panel signup-panel admin-subscriber-panel admin-wide-panel" aria-labelledby="subscriber-table-title">
               <div className="panel-header">
@@ -4480,12 +5052,14 @@ function AdminTestAlertPage() {
                         {subscriberRecords.map((subscriber) => (
                           <tr key={subscriber.id}>
                             <td>
-                              <strong>{formatAdminValue(subscriber.email || subscriber.phone)}</strong>
+                              <strong>{formatAdminValue(subscriber.accountEmail || subscriber.email || subscriber.phone)}</strong>
+                              <span>Alert: {formatAdminValue(subscriber.email)}</span>
                               <span>{formatAdminValue(subscriber.email && subscriber.phone ? subscriber.phone : null)}</span>
                               <span>{subscriber.id}</span>
                             </td>
                             <td>
                               <strong>{formatAdminValue(subscriber.status)}</strong>
+                              <span>Source: {formatAdminValue(subscriber.source)}</span>
                               <span>Email: {formatAdminValue(subscriber.wantsEmail)}</span>
                               <span>SMS: {formatAdminValue(subscriber.wantsSms)}</span>
                             </td>
@@ -5011,7 +5585,15 @@ function App() {
     return <SignupPage />
   }
 
-  if (window.location.pathname === '/admin' || window.location.pathname === '/admin/subscribers') {
+  if (window.location.pathname === '/manage' || window.location.pathname.startsWith('/manage/')) {
+    return <ManageSubscriptionPage />
+  }
+
+  if (
+    window.location.pathname === '/admin' ||
+    window.location.pathname === '/admin/subscribers' ||
+    window.location.pathname === '/admin/manual'
+  ) {
     return <AdminTestAlertPage />
   }
 

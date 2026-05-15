@@ -1,14 +1,19 @@
 import { normalizePhone } from "../../_lib/contacts.js";
-import { updateDeliveryByProviderMessageId, updateSmsPreferenceByPhoneHash } from "../../_lib/db.js";
+import {
+  markStripeSubscriptionCancelAtPeriodEnd,
+  optOutSmsByPhoneHash,
+  updateDeliveryByProviderMessageId,
+  updateSmsPreferenceByPhoneHash,
+} from "../../_lib/db.js";
+import { contactHash } from "../../_lib/crypto.js";
 import { handleError, HttpError } from "../../_lib/http.js";
+import { updateStripeSubscriptionCancelAtPeriodEnd } from "../../_lib/stripe.js";
 import {
   classifyInboundSms,
   getTelnyxDeliveryError,
   hasTelnyxWebhookVerificationKey,
   normalizeTelnyxMessageStatus,
-  sendInboundSmsReply,
   telnyxWebhookResponse,
-  updateSmsPreferenceFromInbound,
   verifyTelnyxWebhook,
 } from "../../_lib/telnyx.js";
 
@@ -31,32 +36,38 @@ async function handleInboundMessage(env, payload) {
   }
 
   const action = classifyInboundSms(payload.text);
-  const updatedCount = await updateSmsPreferenceFromInbound({
-    env,
-    phone,
-    action,
-    updateSmsPreferenceByPhoneHash,
-  });
-
+  let updatedCount = 0;
+  let cancelAtPeriodEndCount = 0;
+  let stripeErrorCount = 0;
   if (action === "stop") {
-    await sendInboundSmsReply(
-      env,
-      phone,
-      "You have been unsubscribed from Apocalypse EWS SMS alerts. Reply START to resubscribe.",
+    const phoneHash = await contactHash(env, "phone", phone);
+    const affectedSubscribers = await optOutSmsByPhoneHash(env, phoneHash, "sms_stop");
+    updatedCount = affectedSubscribers.length;
+    const subscriptionIds = Array.from(
+      new Set(affectedSubscribers.map((subscriber) => subscriber.stripe_subscription_id).filter(Boolean)),
     );
+    for (const subscriptionId of subscriptionIds) {
+      try {
+        await updateStripeSubscriptionCancelAtPeriodEnd(env, subscriptionId, true);
+        await markStripeSubscriptionCancelAtPeriodEnd(env, subscriptionId, true);
+        cancelAtPeriodEndCount += 1;
+      } catch {
+        stripeErrorCount += 1;
+      }
+    }
+    if (stripeErrorCount > 0) {
+      throw new HttpError(502, "Failed to schedule one or more Stripe subscriptions for cancellation.");
+    }
   } else if (action === "start") {
-    await sendInboundSmsReply(env, phone, "You are subscribed to Apocalypse EWS SMS alerts. Reply STOP to unsubscribe.");
-  } else {
-    await sendInboundSmsReply(
-      env,
-      phone,
-      "Apocalypse EWS alerts are event-driven. Reply STOP to unsubscribe or HELP for help.",
-    );
+    const phoneHash = await contactHash(env, "phone", phone);
+    updatedCount = await updateSmsPreferenceByPhoneHash(env, phoneHash, true);
   }
 
   return {
     action,
     updatedCount,
+    cancelAtPeriodEndCount,
+    stripeErrorCount,
   };
 }
 

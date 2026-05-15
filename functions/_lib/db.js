@@ -1,4 +1,5 @@
 import { contactHash, decryptString, encryptString, metadataHash } from "./crypto.js";
+import { getPhoneCountry, isSupportedSmsPhone, normalizeEmail, normalizePhone } from "./contacts.js";
 import { HttpError } from "./http.js";
 
 export const SUBSCRIBER_STATUS = {
@@ -9,6 +10,10 @@ export const SUBSCRIBER_STATUS = {
 };
 
 const DEFAULT_PENDING_SIGNUP_CONTACT_RETENTION_HOURS = 24;
+const SMS_OPT_OUT_SOURCE = {
+  SMS_STOP: "sms_stop",
+  MANAGE_LINK: "manage_link",
+};
 
 function getDb(env) {
   if (!env.EWS_NOTIFY_DB) {
@@ -101,47 +106,45 @@ function getSubscriptionCurrentPeriodEnd(subscription) {
   );
 }
 
-async function firstByContactHashes(env, emailHash, phoneHash) {
-  if (!emailHash && !phoneHash) {
+async function firstByContactHashes(env, emailHash, phoneHash, accountEmailHash = null) {
+  if (!emailHash && !phoneHash && !accountEmailHash) {
     return null;
   }
 
   const db = getDb(env);
-  if (emailHash && phoneHash) {
-    return db
-      .prepare(
-        `
-          SELECT *
-          FROM notification_signups
-          WHERE email_hash = ? OR phone_hash = ?
-          ORDER BY
-            CASE status WHEN 'active' THEN 0 WHEN 'pending_checkout' THEN 1 ELSE 2 END,
-            updated_at DESC
-          LIMIT 1
-        `,
-      )
-      .bind(emailHash, phoneHash)
-      .first();
+  const clauses = [];
+  const params = [];
+  if (emailHash) {
+    clauses.push("email_hash = ?");
+    params.push(emailHash);
+  }
+  if (accountEmailHash) {
+    clauses.push("account_email_hash = ?");
+    params.push(accountEmailHash);
+  }
+  if (phoneHash) {
+    clauses.push("phone_hash = ?");
+    params.push(phoneHash);
   }
 
-  const column = emailHash ? "email_hash" : "phone_hash";
   return db
     .prepare(
       `
         SELECT *
         FROM notification_signups
-        WHERE ${column} = ?
+        WHERE ${clauses.join(" OR ")}
         ORDER BY
           CASE status WHEN 'active' THEN 0 WHEN 'pending_checkout' THEN 1 ELSE 2 END,
           updated_at DESC
         LIMIT 1
       `,
     )
-    .bind(emailHash || phoneHash)
+    .bind(...params)
     .first();
 }
 
 export async function createPendingSignup(env, contacts, requestContext = {}) {
+  const phoneCountry = contacts.phone ? getPhoneCountry(contacts.phone) : null;
   const [emailHash, phoneHash, emailCipher, phoneCipher, consentIpHash, consentUserAgentHash] = await Promise.all([
     contactHash(env, "email", contacts.email),
     contactHash(env, "phone", contacts.phone),
@@ -150,8 +153,10 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
     metadataHash(env, "sms_consent_ip", requestContext.ip),
     metadataHash(env, "sms_consent_user_agent", requestContext.userAgent),
   ]);
+  const accountEmailHash = emailHash;
+  const accountEmailCipher = emailCipher;
 
-  const existing = await firstByContactHashes(env, emailHash, phoneHash);
+  const existing = await firstByContactHashes(env, emailHash, phoneHash, accountEmailHash);
   if (existing?.status === SUBSCRIBER_STATUS.ACTIVE) {
     throw new HttpError(409, "That email address or phone number is already subscribed.");
   }
@@ -169,10 +174,15 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
           UPDATE notification_signups
           SET
             status = ?,
+            source = ?,
             email_cipher = ?,
             email_hash = ?,
+            account_email_cipher = ?,
+            account_email_hash = ?,
+            account_email_source = ?,
             phone_cipher = ?,
             phone_hash = ?,
+            phone_country = ?,
             wants_email = ?,
             wants_sms = ?,
             sms_consent_at = ?,
@@ -183,16 +193,26 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
             checkout_created_at = NULL,
             checkout_completed_at = NULL,
             canceled_at = NULL,
+            sms_opted_out_at = NULL,
+            sms_opt_out_source = NULL,
+            email_opted_out_at = NULL,
+            email_opt_out_source = NULL,
+            stripe_cancel_at_period_end = 0,
             updated_at = ?
           WHERE id = ?
         `,
       )
       .bind(
         SUBSCRIBER_STATUS.PENDING,
+        "stripe",
         emailCipher,
         emailHash,
+        accountEmailCipher,
+        accountEmailHash,
+        contacts.email ? "signup" : null,
         phoneCipher,
         phoneHash,
+        phoneCountry,
         contacts.wantsEmail ? 1 : 0,
         contacts.wantsSms ? 1 : 0,
         smsConsentAt,
@@ -209,10 +229,15 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
           INSERT INTO notification_signups (
             id,
             status,
+            source,
             email_cipher,
             email_hash,
+            account_email_cipher,
+            account_email_hash,
+            account_email_source,
             phone_cipher,
             phone_hash,
+            phone_country,
             wants_email,
             wants_sms,
             sms_consent_at,
@@ -221,16 +246,21 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
             created_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .bind(
         id,
         SUBSCRIBER_STATUS.PENDING,
+        "stripe",
         emailCipher,
         emailHash,
+        accountEmailCipher,
+        accountEmailHash,
+        contacts.email ? "signup" : null,
         phoneCipher,
         phoneHash,
+        phoneCountry,
         contacts.wantsEmail ? 1 : 0,
         contacts.wantsSms ? 1 : 0,
         smsConsentAt,
@@ -293,8 +323,12 @@ export async function anonymizeExpiredPendingSignups(env, options = {}) {
         SET
           email_cipher = NULL,
           email_hash = NULL,
+          account_email_cipher = NULL,
+          account_email_hash = NULL,
+          account_email_source = NULL,
           phone_cipher = NULL,
           phone_hash = NULL,
+          phone_country = NULL,
           sms_consent_ip_hash = NULL,
           sms_consent_user_agent_hash = NULL,
           checkout_url = NULL,
@@ -306,6 +340,8 @@ export async function anonymizeExpiredPendingSignups(env, options = {}) {
           AND (
             email_cipher IS NOT NULL
             OR email_hash IS NOT NULL
+            OR account_email_cipher IS NOT NULL
+            OR account_email_hash IS NOT NULL
             OR phone_cipher IS NOT NULL
             OR phone_hash IS NOT NULL
             OR sms_consent_ip_hash IS NOT NULL
@@ -344,14 +380,23 @@ export async function activateSubscriberFromCheckout(env, checkoutSession) {
     return null;
   }
 
+  let wantsEmail = Number(subscriber.wants_email || 0);
   const stripeEmail = checkoutSession.customer_details?.email || checkoutSession.customer_email || null;
   let emailCipher = subscriber.email_cipher;
   let emailHash = subscriber.email_hash;
-  let wantsEmail = Number(subscriber.wants_email || 0);
-  if (!emailCipher && stripeEmail) {
+  let accountEmailCipher = subscriber.account_email_cipher;
+  let accountEmailHash = subscriber.account_email_hash;
+  let accountEmailSource = subscriber.account_email_source;
+  if (!emailCipher && wantsEmail && stripeEmail) {
     const normalizedEmail = String(stripeEmail).trim().toLowerCase();
     emailCipher = await encryptString(env, normalizedEmail);
     emailHash = await contactHash(env, "email", normalizedEmail);
+  }
+  if (stripeEmail && (!accountEmailCipher || accountEmailSource === "stripe")) {
+    const normalizedEmail = String(stripeEmail).trim().toLowerCase();
+    accountEmailCipher = await encryptString(env, normalizedEmail);
+    accountEmailHash = await contactHash(env, "email", normalizedEmail);
+    accountEmailSource = "stripe";
   }
 
   await db
@@ -362,6 +407,9 @@ export async function activateSubscriberFromCheckout(env, checkoutSession) {
           status = ?,
           email_cipher = ?,
           email_hash = ?,
+          account_email_cipher = ?,
+          account_email_hash = ?,
+          account_email_source = ?,
           wants_email = ?,
           stripe_customer_id = ?,
           stripe_subscription_id = ?,
@@ -375,6 +423,9 @@ export async function activateSubscriberFromCheckout(env, checkoutSession) {
       SUBSCRIBER_STATUS.ACTIVE,
       emailCipher,
       emailHash,
+      accountEmailCipher,
+      accountEmailHash,
+      accountEmailSource,
       wantsEmail,
       checkoutSession.customer || null,
       checkoutSession.subscription || null,
@@ -403,8 +454,12 @@ export async function cancelPendingSubscriberByCheckout(env, checkoutSession) {
           status = ?,
           email_cipher = NULL,
           email_hash = NULL,
+          account_email_cipher = NULL,
+          account_email_hash = NULL,
+          account_email_source = NULL,
           phone_cipher = NULL,
           phone_hash = NULL,
+          phone_country = NULL,
           sms_consent_ip_hash = NULL,
           sms_consent_user_agent_hash = NULL,
           checkout_url = NULL,
@@ -458,6 +513,7 @@ export async function updateSubscriberFromSubscription(env, subscription) {
           stripe_subscription_id = ?,
           current_period_end = ?,
           canceled_at = ?,
+          stripe_cancel_at_period_end = ?,
           updated_at = ?
         WHERE id = ?
       `,
@@ -468,6 +524,7 @@ export async function updateSubscriberFromSubscription(env, subscription) {
       subscriptionId,
       unixSecondsToIso(getSubscriptionCurrentPeriodEnd(subscription)),
       nextStatus === SUBSCRIBER_STATUS.CANCELED ? nowIso() : null,
+      subscription.cancel_at_period_end ? 1 : 0,
       nowIso(),
       subscriber.id,
     )
@@ -490,6 +547,7 @@ export async function cancelSubscriberBySubscription(env, subscription) {
         SET
           status = ?,
           canceled_at = ?,
+          stripe_cancel_at_period_end = 0,
           updated_at = ?
         WHERE stripe_subscription_id = ?
       `,
@@ -519,18 +577,428 @@ export async function getActiveSubscribers(env) {
 }
 
 export async function hydrateSubscriberContacts(env, subscriber) {
-  const [email, phone] = await Promise.all([
+  const [email, accountEmail, phone] = await Promise.all([
     decryptString(env, subscriber.email_cipher),
+    decryptString(env, subscriber.account_email_cipher),
     decryptString(env, subscriber.phone_cipher),
   ]);
 
   return {
     ...subscriber,
     email,
+    alertEmail: email,
+    accountEmail,
     phone,
     wantsEmail: Number(subscriber.wants_email || 0) === 1,
     wantsSms: Number(subscriber.wants_sms || 0) === 1,
+    source: subscriber.source || "stripe",
+    phoneCountry: subscriber.phone_country || (phone ? getPhoneCountry(phone) : null),
+    stripeCancelAtPeriodEnd: Number(subscriber.stripe_cancel_at_period_end || 0) === 1,
   };
+}
+
+export async function getSubscriberById(env, subscriberId) {
+  if (!subscriberId) {
+    return null;
+  }
+
+  return getDb(env).prepare("SELECT * FROM notification_signups WHERE id = ?").bind(subscriberId).first();
+}
+
+export async function createManualSubscriber(env, payload = {}, requestContext = {}) {
+  const accountEmail = normalizeEmail(payload.accountEmail || payload.email);
+  const wantsEmail = Boolean(payload.wantsEmail);
+  const email = wantsEmail ? normalizeEmail(payload.email || accountEmail) : null;
+  const phone = normalizePhone(payload.phone);
+  const wantsSms = Boolean(payload.wantsSms) && Boolean(phone);
+
+  if (!accountEmail) {
+    throw new HttpError(400, "Enter an account email address for the manual subscriber.");
+  }
+  if (!email && !phone) {
+    throw new HttpError(400, "Enter an alert email address, a phone number, or both.");
+  }
+  if (phone && !isSupportedSmsPhone(phone)) {
+    throw new HttpError(400, "Manual SMS subscribers must use a US or Canada phone number.");
+  }
+  if (wantsSms && !payload.smsConsent) {
+    throw new HttpError(400, "Confirm SMS consent before enabling SMS for a manual subscriber.");
+  }
+
+  const phoneCountry = phone ? getPhoneCountry(phone) : null;
+  const timestamp = nowIso();
+  const [accountEmailHash, accountEmailCipher, emailHash, emailCipher, phoneHash, phoneCipher, consentIpHash, consentUserAgentHash] =
+    await Promise.all([
+      contactHash(env, "email", accountEmail),
+      encryptString(env, accountEmail),
+      contactHash(env, "email", email),
+      encryptString(env, email),
+      contactHash(env, "phone", phone),
+      encryptString(env, phone),
+      metadataHash(env, "sms_consent_ip", requestContext.ip),
+      metadataHash(env, "sms_consent_user_agent", requestContext.userAgent),
+    ]);
+  const existing = await firstByContactHashes(env, emailHash, phoneHash, accountEmailHash);
+  if (existing?.status === SUBSCRIBER_STATUS.ACTIVE || existing?.status === SUBSCRIBER_STATUS.PAST_DUE) {
+    throw new HttpError(409, "That email address or phone number is already subscribed.");
+  }
+
+  const id = existing?.id || crypto.randomUUID();
+  const createdAt = existing?.created_at || timestamp;
+  const db = getDb(env);
+  if (existing) {
+    await db
+      .prepare(
+        `
+          UPDATE notification_signups
+          SET
+            status = ?,
+            source = ?,
+            account_email_cipher = ?,
+            account_email_hash = ?,
+            account_email_source = ?,
+            email_cipher = ?,
+            email_hash = ?,
+            phone_cipher = ?,
+            phone_hash = ?,
+            phone_country = ?,
+            wants_email = ?,
+            wants_sms = ?,
+            sms_consent_at = ?,
+            sms_consent_ip_hash = ?,
+            sms_consent_user_agent_hash = ?,
+            stripe_customer_id = NULL,
+            stripe_subscription_id = NULL,
+            stripe_checkout_session_id = NULL,
+            stripe_product_id = NULL,
+            stripe_price_id = NULL,
+            checkout_url = NULL,
+            checkout_created_at = NULL,
+            checkout_completed_at = NULL,
+            current_period_end = NULL,
+            canceled_at = NULL,
+            contact_redacted_at = NULL,
+            sms_opted_out_at = NULL,
+            sms_opt_out_source = NULL,
+            email_opted_out_at = NULL,
+            email_opt_out_source = NULL,
+            stripe_cancel_at_period_end = 0,
+            manual_note = ?,
+            updated_at = ?
+          WHERE id = ?
+        `,
+      )
+      .bind(
+        SUBSCRIBER_STATUS.ACTIVE,
+        "manual",
+        accountEmailCipher,
+        accountEmailHash,
+        "manual",
+        emailCipher,
+        emailHash,
+        phoneCipher,
+        phoneHash,
+        phoneCountry,
+        wantsEmail ? 1 : 0,
+        wantsSms ? 1 : 0,
+        wantsSms ? timestamp : null,
+        wantsSms ? consentIpHash : null,
+        wantsSms ? consentUserAgentHash : null,
+        String(payload.manualNote || "").trim() || null,
+        timestamp,
+        id,
+      )
+      .run();
+  } else {
+    await db
+      .prepare(
+        `
+          INSERT INTO notification_signups (
+            id,
+            status,
+            source,
+            account_email_cipher,
+            account_email_hash,
+            account_email_source,
+            email_cipher,
+            email_hash,
+            phone_cipher,
+            phone_hash,
+            phone_country,
+            wants_email,
+            wants_sms,
+            sms_consent_at,
+            sms_consent_ip_hash,
+            sms_consent_user_agent_hash,
+            manual_note,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .bind(
+        id,
+        SUBSCRIBER_STATUS.ACTIVE,
+        "manual",
+        accountEmailCipher,
+        accountEmailHash,
+        "manual",
+        emailCipher,
+        emailHash,
+        phoneCipher,
+        phoneHash,
+        phoneCountry,
+        wantsEmail ? 1 : 0,
+        wantsSms ? 1 : 0,
+        wantsSms ? timestamp : null,
+        wantsSms ? consentIpHash : null,
+        wantsSms ? consentUserAgentHash : null,
+        String(payload.manualNote || "").trim() || null,
+        createdAt,
+        timestamp,
+      )
+      .run();
+  }
+
+  return hydrateSubscriberContacts(env, await getSubscriberById(env, id));
+}
+
+export async function updateSubscriberContactSettings(env, subscriberId, payload = {}) {
+  const subscriber = await getSubscriberById(env, subscriberId);
+  if (!subscriber) {
+    throw new HttpError(404, "Subscriber not found.");
+  }
+
+  const previous = await hydrateSubscriberContacts(env, subscriber);
+  const accountEmail = normalizeEmail(payload.accountEmail || payload.email || previous.accountEmail);
+  const wantsEmail = Boolean(payload.wantsEmail);
+  const email = wantsEmail ? normalizeEmail(payload.email || payload.accountEmail || accountEmail) : null;
+  const phone = normalizePhone(payload.phone);
+  const wantsSms = Boolean(payload.wantsSms);
+  if (!accountEmail) {
+    throw new HttpError(400, "Enter an account email address.");
+  }
+  if (wantsEmail && !email) {
+    throw new HttpError(400, "Enter an alert email address.");
+  }
+  if (wantsSms && !phone) {
+    throw new HttpError(400, "Enter a phone number before enabling SMS alerts.");
+  }
+  if (phone && !isSupportedSmsPhone(phone)) {
+    throw new HttpError(400, "SMS alerts currently support US and Canada phone numbers only.");
+  }
+
+  const timestamp = nowIso();
+  const phoneCountry = phone ? getPhoneCountry(phone) : null;
+  const [accountEmailHash, accountEmailCipher, emailHash, emailCipher, phoneHash, phoneCipher] = await Promise.all([
+    contactHash(env, "email", accountEmail),
+    encryptString(env, accountEmail),
+    contactHash(env, "email", email),
+    encryptString(env, email),
+    contactHash(env, "phone", phone),
+    encryptString(env, phone),
+  ]);
+
+  await getDb(env)
+    .prepare(
+      `
+        UPDATE notification_signups
+        SET
+          account_email_cipher = ?,
+          account_email_hash = ?,
+          account_email_source = ?,
+          email_cipher = ?,
+          email_hash = ?,
+          phone_cipher = ?,
+          phone_hash = ?,
+          phone_country = ?,
+          wants_email = ?,
+          wants_sms = ?,
+          email_opted_out_at = CASE WHEN ? = 1 AND ? = 0 THEN ? ELSE email_opted_out_at END,
+          email_opt_out_source = CASE WHEN ? = 1 AND ? = 0 THEN ? ELSE email_opt_out_source END,
+          sms_opted_out_at = CASE WHEN ? = 1 AND ? = 0 THEN ? ELSE sms_opted_out_at END,
+          sms_opt_out_source = CASE WHEN ? = 1 AND ? = 0 THEN ? ELSE sms_opt_out_source END,
+          updated_at = ?
+        WHERE id = ?
+      `,
+    )
+    .bind(
+      accountEmailCipher,
+      accountEmailHash,
+      subscriber.source === "manual" ? "manual" : "signup",
+      emailCipher,
+      emailHash,
+      phoneCipher,
+      phoneHash,
+      phoneCountry,
+      wantsEmail ? 1 : 0,
+      wantsSms ? 1 : 0,
+      previous.wantsEmail ? 1 : 0,
+      wantsEmail ? 1 : 0,
+      timestamp,
+      previous.wantsEmail ? 1 : 0,
+      wantsEmail ? 1 : 0,
+      SMS_OPT_OUT_SOURCE.MANAGE_LINK,
+      previous.wantsSms ? 1 : 0,
+      wantsSms ? 1 : 0,
+      timestamp,
+      previous.wantsSms ? 1 : 0,
+      wantsSms ? 1 : 0,
+      SMS_OPT_OUT_SOURCE.MANAGE_LINK,
+      timestamp,
+      subscriberId,
+    )
+    .run();
+
+  return hydrateSubscriberContacts(env, await getSubscriberById(env, subscriberId));
+}
+
+export async function updateSubscriberEmailPreference(env, subscriberId, wantsEmail, source = SMS_OPT_OUT_SOURCE.MANAGE_LINK) {
+  const timestamp = nowIso();
+  await getDb(env)
+    .prepare(
+      `
+        UPDATE notification_signups
+        SET
+          wants_email = ?,
+          email_opted_out_at = CASE WHEN ? = 0 THEN COALESCE(email_opted_out_at, ?) ELSE NULL END,
+          email_opt_out_source = CASE WHEN ? = 0 THEN ? ELSE NULL END,
+          updated_at = ?
+        WHERE id = ?
+      `,
+    )
+    .bind(wantsEmail ? 1 : 0, wantsEmail ? 1 : 0, timestamp, wantsEmail ? 1 : 0, source, timestamp, subscriberId)
+    .run();
+
+  return hydrateSubscriberContacts(env, await getSubscriberById(env, subscriberId));
+}
+
+export async function updateSubscriberSmsPreference(env, subscriberId, wantsSms, source = SMS_OPT_OUT_SOURCE.MANAGE_LINK) {
+  const timestamp = nowIso();
+  await getDb(env)
+    .prepare(
+      `
+        UPDATE notification_signups
+        SET
+          wants_sms = ?,
+          sms_opted_out_at = CASE WHEN ? = 0 THEN COALESCE(sms_opted_out_at, ?) ELSE NULL END,
+          sms_opt_out_source = CASE WHEN ? = 0 THEN ? ELSE NULL END,
+          updated_at = ?
+        WHERE id = ?
+      `,
+    )
+    .bind(wantsSms ? 1 : 0, wantsSms ? 1 : 0, timestamp, wantsSms ? 1 : 0, source, timestamp, subscriberId)
+    .run();
+
+  return hydrateSubscriberContacts(env, await getSubscriberById(env, subscriberId));
+}
+
+export async function recordSubscriberWelcomeSent(env, subscriberId, channel) {
+  const column = channel === "sms" ? "welcome_sms_sent_at" : "welcome_email_sent_at";
+  await getDb(env)
+    .prepare(`UPDATE notification_signups SET ${column} = ?, updated_at = ? WHERE id = ?`)
+    .bind(nowIso(), nowIso(), subscriberId)
+    .run();
+}
+
+export async function markStripeSubscriptionCancelAtPeriodEnd(env, subscriptionId, cancelAtPeriodEnd = true) {
+  if (!subscriptionId) {
+    return 0;
+  }
+
+  const result = await getDb(env)
+    .prepare(
+      `
+        UPDATE notification_signups
+        SET
+          stripe_cancel_at_period_end = ?,
+          updated_at = ?
+        WHERE stripe_subscription_id = ?
+      `,
+    )
+    .bind(cancelAtPeriodEnd ? 1 : 0, nowIso(), subscriptionId)
+    .run();
+
+  return result.meta?.changes || 0;
+}
+
+export async function cancelManualSubscriber(env, subscriberId) {
+  const timestamp = nowIso();
+  const result = await getDb(env)
+    .prepare(
+      `
+        UPDATE notification_signups
+        SET
+          status = ?,
+          account_email_cipher = NULL,
+          account_email_hash = NULL,
+          account_email_source = NULL,
+          email_cipher = NULL,
+          email_hash = NULL,
+          phone_cipher = NULL,
+          phone_hash = NULL,
+          phone_country = NULL,
+          wants_email = 0,
+          wants_sms = 0,
+          sms_consent_at = NULL,
+          sms_consent_ip_hash = NULL,
+          sms_consent_user_agent_hash = NULL,
+          canceled_at = COALESCE(canceled_at, ?),
+          contact_redacted_at = COALESCE(contact_redacted_at, ?),
+          manual_note = NULL,
+          updated_at = ?
+        WHERE id = ?
+          AND source = 'manual'
+      `,
+    )
+    .bind(SUBSCRIBER_STATUS.CANCELED, timestamp, timestamp, timestamp, subscriberId)
+    .run();
+
+  return result.meta?.changes || 0;
+}
+
+export async function optOutSmsByPhoneHash(env, phoneHash, source = SMS_OPT_OUT_SOURCE.SMS_STOP) {
+  if (!phoneHash) {
+    return [];
+  }
+
+  const db = getDb(env);
+  const { results } = await db
+    .prepare(
+      `
+        SELECT id, source, status, stripe_subscription_id
+        FROM notification_signups
+        WHERE phone_hash = ?
+          AND status IN (?, ?)
+      `,
+    )
+    .bind(phoneHash, SUBSCRIBER_STATUS.ACTIVE, SUBSCRIBER_STATUS.PAST_DUE)
+    .all();
+  const rows = results || [];
+  if (!rows.length) {
+    return [];
+  }
+
+  const timestamp = nowIso();
+  await db
+    .prepare(
+      `
+        UPDATE notification_signups
+        SET
+          wants_sms = 0,
+          sms_opted_out_at = COALESCE(sms_opted_out_at, ?),
+          sms_opt_out_source = ?,
+          updated_at = ?
+        WHERE phone_hash = ?
+          AND wants_sms = 1
+          AND status IN (?, ?)
+      `,
+    )
+    .bind(timestamp, source, timestamp, phoneHash, SUBSCRIBER_STATUS.ACTIVE, SUBSCRIBER_STATUS.PAST_DUE)
+    .run();
+
+  return rows;
 }
 
 export async function getMetaValue(env, key) {
@@ -758,18 +1226,24 @@ function mapSubscriberDailyStats(row) {
 }
 
 async function mapAdminSubscriberRow(env, row) {
-  const [email, phone] = await Promise.all([
+  const [email, accountEmail, phone] = await Promise.all([
     decryptString(env, row.email_cipher),
+    decryptString(env, row.account_email_cipher),
     decryptString(env, row.phone_cipher),
   ]);
 
   return {
     id: row.id,
     status: row.status,
+    source: row.source || "stripe",
     email,
     emailHash: row.email_hash,
+    accountEmail,
+    accountEmailHash: row.account_email_hash,
+    accountEmailSource: row.account_email_source,
     phone,
     phoneHash: row.phone_hash,
+    phoneCountry: row.phone_country,
     wantsEmail: Number(row.wants_email || 0) === 1,
     wantsSms: Number(row.wants_sms || 0) === 1,
     smsConsentAt: row.sms_consent_at,
@@ -786,9 +1260,18 @@ async function mapAdminSubscriberRow(env, row) {
     currentPeriodEnd: row.current_period_end,
     canceledAt: row.canceled_at,
     contactRedactedAt: row.contact_redacted_at,
+    smsOptedOutAt: row.sms_opted_out_at,
+    smsOptOutSource: row.sms_opt_out_source,
+    emailOptedOutAt: row.email_opted_out_at,
+    emailOptOutSource: row.email_opt_out_source,
+    welcomeEmailSentAt: row.welcome_email_sent_at,
+    welcomeSmsSentAt: row.welcome_sms_sent_at,
+    stripeCancelAtPeriodEnd: Number(row.stripe_cancel_at_period_end || 0) === 1,
+    manualNote: row.manual_note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     hasEmailCipher: Boolean(row.email_cipher),
+    hasAccountEmailCipher: Boolean(row.account_email_cipher),
     hasPhoneCipher: Boolean(row.phone_cipher),
     deliveryCount: Number(row.delivery_count || 0),
     emailDeliveryCount: Number(row.email_delivery_count || 0),
@@ -960,17 +1443,28 @@ export async function updateSmsPreferenceByPhoneHash(env, phoneHash, wantsSms) {
     return 0;
   }
 
+  const timestamp = nowIso();
   const result = await getDb(env)
     .prepare(
       `
         UPDATE notification_signups
         SET
           wants_sms = ?,
+          sms_opted_out_at = CASE WHEN ? = 0 THEN COALESCE(sms_opted_out_at, ?) ELSE NULL END,
+          sms_opt_out_source = CASE WHEN ? = 0 THEN ? ELSE NULL END,
           updated_at = ?
         WHERE phone_hash = ?
       `,
     )
-    .bind(wantsSms ? 1 : 0, nowIso(), phoneHash)
+    .bind(
+      wantsSms ? 1 : 0,
+      wantsSms ? 1 : 0,
+      timestamp,
+      wantsSms ? 1 : 0,
+      SMS_OPT_OUT_SOURCE.SMS_STOP,
+      timestamp,
+      phoneHash,
+    )
     .run();
 
   return result.meta?.changes || 0;

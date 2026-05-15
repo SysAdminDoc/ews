@@ -118,6 +118,16 @@ export async function createBillingPortalSession(env, { customerId, returnUrl })
   ]);
 }
 
+export async function updateStripeSubscriptionCancelAtPeriodEnd(env, subscriptionId, cancelAtPeriodEnd = true) {
+  if (!subscriptionId) {
+    throw new HttpError(400, "Missing Stripe subscription ID.");
+  }
+
+  return stripeRequest(env, "POST", `/subscriptions/${encodeURIComponent(subscriptionId)}`, [
+    ["cancel_at_period_end", cancelAtPeriodEnd ? "true" : "false"],
+  ]);
+}
+
 function parseStripeSignature(signatureHeader) {
   const parts = String(signatureHeader || "").split(",");
   const parsed = {

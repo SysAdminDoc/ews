@@ -1152,6 +1152,47 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   outline-offset: 2px;
 }
 
+.manual-result {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #cccccc;
+  background: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.manual-result strong,
+.manual-result span,
+.manual-result a {
+  display: block;
+}
+
+.admin-notify-form {
+  padding-top: 12px;
+  border-top: 1px solid #cccccc;
+}
+
+.danger-button {
+  justify-self: start;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #990000;
+  background: #990000;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.danger-button:disabled {
+  background: #eeeeee;
+  color: #777777;
+  cursor: not-allowed;
+}
+
+.danger-button:focus-visible {
+  outline: 1px dotted #000000;
+  outline-offset: 2px;
+}
+
 .delivery-history {
   display: grid;
   gap: 8px;

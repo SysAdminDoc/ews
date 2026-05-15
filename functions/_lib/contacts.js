@@ -3,6 +3,7 @@ import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 
 const PHONE_VALIDATION_MESSAGE =
   "Enter a valid phone number. Use 10 digits for US/Canada, or + and country code for international numbers.";
+const SUPPORTED_SMS_COUNTRY_CODES = new Set(["US", "CA"]);
 
 function getPhoneCandidate(raw, digits, withPlus) {
   if (withPlus) {
@@ -56,6 +57,34 @@ export function normalizePhone(value) {
   }
 
   return phoneNumber.number;
+}
+
+export function getPhoneCountry(value) {
+  const phone = normalizePhone(value);
+  if (!phone) {
+    return null;
+  }
+
+  return parsePhoneNumberFromString(phone)?.country || null;
+}
+
+export function isSupportedSmsPhone(value) {
+  const country = getPhoneCountry(value);
+  return SUPPORTED_SMS_COUNTRY_CODES.has(country);
+}
+
+export function getPhoneCountryName(countryCode) {
+  const code = String(countryCode || "").trim().toUpperCase();
+  if (!code) {
+    return "an unsupported country";
+  }
+
+  try {
+    const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
+    return displayNames.of(code) || code;
+  } catch {
+    return code;
+  }
 }
 
 export function normalizeSignupContacts(payload) {

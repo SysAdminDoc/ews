@@ -2,19 +2,25 @@ import {
   createAlertRecord,
   getActiveSubscribers,
   getMetaValue,
+  getSubscriberById,
   hydrateSubscriberContacts,
+  recordSubscriberWelcomeSent,
   recordDelivery,
   setMetaValue,
   updateAlertRecord,
 } from "./db.js";
 import { contactHash } from "./crypto.js";
-import { createCustomerPortalLink } from "./customer-portal.js";
+import { getPhoneCountryName, isSupportedSmsPhone } from "./contacts.js";
+import { createAccountManagementLink } from "./customer-portal.js";
 import { HttpError } from "./http.js";
 import { sendTelnyxMessage } from "./telnyx.js";
 
 const LEVEL5_COOLDOWN_META_KEY = "level5_notification_last_sent_at";
 const DEFAULT_NOTIFICATION_URL = "https://aews.cc/";
 const LEVEL5_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+export const SIGNUP_CONFIRMATION_SMS_TEXT =
+  "Apocalypse EWS: you're subscribed. Hopefully we won't need to text. Reply STOP to stop SMS. Msg&data rates may apply. https://aews.cc/";
+const STRIPE_BILLING_PORTAL_URL = "https://billing.stripe.com/p/login/6oU7sL14I6ewbuL2dJ4ow00";
 
 function formatCount(value) {
   const numericValue = Number(value || 0);
@@ -80,8 +86,8 @@ function getNotificationBaseUrl(env) {
 }
 
 async function appendCustomerPortalLink(env, subscriber, messageText) {
-  const portalUrl = await createCustomerPortalLink(env, subscriber, { baseUrl: getNotificationBaseUrl(env) });
-  return `${messageText}\n\nManage or cancel your subscription: ${portalUrl}`;
+  const portalUrl = await createAccountManagementLink(env, subscriber, { baseUrl: getNotificationBaseUrl(env) });
+  return `${messageText}\n\nManage your notification settings: ${portalUrl}`;
 }
 
 async function sendEmail(env, { to, subject, text }) {
@@ -218,7 +224,7 @@ async function sendAlertToSubscribers(env, { alertId, subscribers, messageText, 
       }
     }
 
-    if (hydrated.wantsSms && hydrated.phone) {
+    if (hydrated.wantsSms && hydrated.phone && isSupportedSmsPhone(hydrated.phone)) {
       const result = await sendDelivery(env, {
         alertId,
         subscriberId: hydrated.id,
@@ -237,6 +243,126 @@ async function sendAlertToSubscribers(env, { alertId, subscribers, messageText, 
   summary.status = summary.errorCount > 0 ? "completed_with_errors" : "sent";
   await updateAlertRecord(env, alertId, summary);
   return summary;
+}
+
+function getSignupConfirmationEmailText(subscriber, managementUrl) {
+  const lines = [
+    "You're subscribed to Apocalypse Early Warning System.",
+    "",
+    "Hopefully we will not need to send you a message.",
+    "",
+  ];
+  const smsSupported = subscriber.phone ? isSupportedSmsPhone(subscriber.phone) : false;
+
+  if (subscriber.wantsSms && subscriber.phone && smsSupported) {
+    lines.push(
+      `We will send SMS alerts to ${subscriber.phone} when the emergency level reaches 5.`,
+      "Reply STOP to stop SMS. Message and data rates may apply.",
+      "",
+    );
+  } else if (subscriber.wantsSms && subscriber.phone) {
+    const countryName = getPhoneCountryName(subscriber.phoneCountry);
+    lines.push(
+      `The number you registered with us is based in ${countryName}.`,
+      "We are still working on SMS support outside the US and Canada.",
+    );
+    if (subscriber.wantsEmail && subscriber.email) {
+      lines.push("In the meantime, we will send you an email alert instead.");
+    } else {
+      lines.push("In the meantime, use the management link below if you want to add an alert email.");
+    }
+    lines.push(
+      "",
+      "For a refund, just ask: ews@kylemcdonald.net",
+      `To cancel, use the portal: ${STRIPE_BILLING_PORTAL_URL}`,
+      "",
+    );
+  }
+
+  if (subscriber.wantsEmail && subscriber.email) {
+    lines.push(`We will send email alerts to ${subscriber.email} when the emergency level reaches 5.`, "");
+  } else {
+    lines.push("This email is for account management. You are not currently signed up for email alerts.", "");
+  }
+
+  lines.push("Manage your notification settings:", managementUrl);
+
+  if (subscriber.stripe_customer_id || subscriber.stripeCustomerId) {
+    lines.push("", "For billing-only changes, you can also use Stripe:", STRIPE_BILLING_PORTAL_URL);
+  }
+
+  return lines.join("\n");
+}
+
+export async function sendSignupConfirmationToSubscriber(env, subscriberId, options = {}) {
+  const subscriber = await getSubscriberById(env, subscriberId);
+  if (!subscriber) {
+    throw new HttpError(404, "Subscriber not found.");
+  }
+
+  const hydrated = await hydrateSubscriberContacts(env, subscriber);
+  const managementUrl = await createAccountManagementLink(env, hydrated, { baseUrl: getNotificationBaseUrl(env) });
+  const channels = options.channels || {};
+  const sendEmailConfirmation = channels.email !== false;
+  const sendSmsConfirmation = channels.sms !== false;
+  const summary = {
+    subscriberCount: 1,
+    emailSentCount: 0,
+    smsSentCount: 0,
+    errorCount: 0,
+  };
+  const alertId = await createAlertRecord(env, {
+    kind: "signup_confirmation",
+    source: "admin",
+    level: null,
+    slotKey: null,
+    messageText: "Signup confirmation",
+  });
+
+  const emailDestination = hydrated.accountEmail || hydrated.email;
+  if (sendEmailConfirmation && emailDestination) {
+    const emailText = getSignupConfirmationEmailText(hydrated, managementUrl);
+    const result = await sendDelivery(env, {
+      alertId,
+      subscriberId: hydrated.id,
+      channel: "email",
+      destination: emailDestination,
+      text: emailText,
+      subject: "Apocalypse EWS subscription confirmation",
+    });
+    if (result.ok) {
+      summary.emailSentCount += 1;
+      await recordSubscriberWelcomeSent(env, hydrated.id, "email");
+    } else {
+      summary.errorCount += 1;
+    }
+  }
+
+  if (sendSmsConfirmation && hydrated.wantsSms && hydrated.phone && isSupportedSmsPhone(hydrated.phone)) {
+    const result = await sendDelivery(env, {
+      alertId,
+      subscriberId: hydrated.id,
+      channel: "sms",
+      destination: hydrated.phone,
+      text: SIGNUP_CONFIRMATION_SMS_TEXT,
+    });
+    if (result.ok) {
+      summary.smsSentCount += 1;
+      await recordSubscriberWelcomeSent(env, hydrated.id, "sms");
+    } else {
+      summary.errorCount += 1;
+    }
+  }
+
+  summary.status = summary.errorCount > 0 ? "completed_with_errors" : "sent";
+  await updateAlertRecord(env, alertId, summary);
+  return {
+    ok: summary.errorCount === 0,
+    sent: true,
+    alertId,
+    managementUrl,
+    ...summary,
+  };
 }
 
 export async function maybeSendLevel5Notifications(env, snapshot, { source = "scheduled_refresh" } = {}) {
