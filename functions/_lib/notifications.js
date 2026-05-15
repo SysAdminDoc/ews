@@ -344,24 +344,49 @@ export async function sendSignupConfirmationToSubscriber(env, subscriberId, opti
   const hydrated = await hydrateSubscriberContacts(env, subscriber);
   const managementUrl = await createAccountManagementLink(env, hydrated, { baseUrl: getNotificationBaseUrl(env) });
   const channels = options.channels || {};
-  const sendEmailConfirmation = channels.email !== false;
-  const sendSmsConfirmation = channels.sms !== false;
+  const skipAlreadySent = Boolean(options.skipAlreadySent);
+  const emailAlreadySent = Boolean(hydrated.welcome_email_sent_at || hydrated.welcomeEmailSentAt);
+  const smsAlreadySent = Boolean(hydrated.welcome_sms_sent_at || hydrated.welcomeSmsSentAt);
+  const sendEmailConfirmation = channels.email !== false && (!skipAlreadySent || !emailAlreadySent);
+  const sendSmsConfirmation = channels.sms !== false && (!skipAlreadySent || !smsAlreadySent);
+  const emailDestination = hydrated.accountEmail || hydrated.email;
+  const canSendEmailConfirmation = Boolean(sendEmailConfirmation && emailDestination);
+  const canSendSmsConfirmation = Boolean(
+    sendSmsConfirmation && hydrated.wantsSms && hydrated.phone && isSupportedSmsPhone(hydrated.phone),
+  );
   const summary = {
     subscriberCount: 1,
     emailSentCount: 0,
     smsSentCount: 0,
     errorCount: 0,
   };
+
+  if (!canSendEmailConfirmation && !canSendSmsConfirmation) {
+    return {
+      ok: true,
+      sent: false,
+      skipped: true,
+      reason:
+        skipAlreadySent &&
+        (channels.email === false || emailAlreadySent) &&
+        (channels.sms === false || smsAlreadySent)
+          ? "signup_confirmation_already_sent"
+          : "signup_confirmation_no_delivery_channels",
+      managementUrl,
+      status: "skipped",
+      ...summary,
+    };
+  }
+
   const alertId = await createAlertRecord(env, {
     kind: "signup_confirmation",
-    source: "admin",
+    source: options.source || "admin",
     level: null,
     slotKey: null,
     messageText: "Signup confirmation",
   });
 
-  const emailDestination = hydrated.accountEmail || hydrated.email;
-  if (sendEmailConfirmation && emailDestination) {
+  if (canSendEmailConfirmation) {
     const emailContent = getSignupConfirmationEmailContent(hydrated, managementUrl);
     const result = await sendDelivery(env, {
       alertId,
@@ -380,7 +405,7 @@ export async function sendSignupConfirmationToSubscriber(env, subscriberId, opti
     }
   }
 
-  if (sendSmsConfirmation && hydrated.wantsSms && hydrated.phone && isSupportedSmsPhone(hydrated.phone)) {
+  if (canSendSmsConfirmation) {
     const result = await sendDelivery(env, {
       alertId,
       subscriberId: hydrated.id,
