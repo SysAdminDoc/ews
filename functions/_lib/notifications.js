@@ -19,7 +19,7 @@ const LEVEL5_COOLDOWN_META_KEY = "level5_notification_last_sent_at";
 const DEFAULT_NOTIFICATION_URL = "https://aews.cc/";
 const LEVEL5_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 export const SIGNUP_CONFIRMATION_SMS_TEXT =
-  "Apocalypse EWS: you're subscribed. Hopefully we won't need to text. Reply STOP to stop SMS. Msg&data rates may apply. https://aews.cc/";
+  "Apocalypse Early Warning System: subscription confirmed. We will only text if emergency level reaches 5. Reply STOP to stop. Msg&data rates may apply.";
 const HOPEFULLY_MESSAGE = "Hopefully we will not need to send you a message.";
 
 function formatCount(value) {
