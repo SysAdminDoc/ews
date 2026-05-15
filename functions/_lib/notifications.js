@@ -20,7 +20,7 @@ const DEFAULT_NOTIFICATION_URL = "https://aews.cc/";
 const LEVEL5_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 export const SIGNUP_CONFIRMATION_SMS_TEXT =
   "Apocalypse EWS: you're subscribed. Hopefully we won't need to text. Reply STOP to stop SMS. Msg&data rates may apply. https://aews.cc/";
-const STRIPE_BILLING_PORTAL_URL = "https://billing.stripe.com/p/login/6oU7sL14I6ewbuL2dJ4ow00";
+const HOPEFULLY_MESSAGE = "Hopefully we will not need to send you a message.";
 
 function formatCount(value) {
   const numericValue = Number(value || 0);
@@ -277,65 +277,61 @@ function formatSignupConfirmationChannelSentence(subscriber) {
   const hasEmailAlerts = Boolean(subscriber.wantsEmail && subscriber.email);
 
   if (hasSupportedSms && hasEmailAlerts) {
-    return `When the emergency level reaches 5, we will text you at ${subscriber.phone} and email you at ${subscriber.email}. Hopefully we will not need to send you a message.`;
+    return `When the emergency level reaches 5, we will text you at ${subscriber.phone} and email you at ${subscriber.email}.`;
   }
   if (hasEmailAlerts) {
-    return `When the emergency level reaches 5, we will email you at ${subscriber.email}. Hopefully we will not need to send you a message.`;
+    return `When the emergency level reaches 5, we will email you at ${subscriber.email}.`;
   }
   if (hasSupportedSms) {
-    return `When the emergency level reaches 5, we will text you at ${subscriber.phone}. Hopefully we will not need to send you a message.`;
+    return `When the emergency level reaches 5, we will text you at ${subscriber.phone}.`;
   }
 
-  return "Hopefully we will not need to send you a message.";
+  return "";
 }
 
 function getSignupConfirmationEmailContent(subscriber, managementUrl) {
-  const bodyLines = [
-    "You're subscribed to Apocalypse Early Warning System.",
-    "",
-    formatSignupConfirmationChannelSentence(subscriber),
-    "",
-  ];
   const smsSupported = subscriber.phone ? isSupportedSmsPhone(subscriber.phone) : false;
+  const hasUnsupportedSms = Boolean(subscriber.wantsSms && subscriber.phone && !smsSupported);
+  const hasStripeSubscription = Boolean(subscriber.stripe_customer_id || subscriber.stripeCustomerId);
+  const managementLinkText = hasStripeSubscription
+    ? "Manage your notification settings and billing information."
+    : "Manage your notification settings.";
 
-  if (subscriber.wantsSms && subscriber.phone && smsSupported) {
-    bodyLines.push("Reply STOP to stop SMS. Message and data rates may apply.", "");
-  } else if (subscriber.wantsSms && subscriber.phone) {
+  const bodyLines = ["You're subscribed to Apocalypse Early Warning System.", ""];
+
+  if (hasUnsupportedSms) {
     const countryName = getPhoneCountryName(subscriber.phoneCountry);
     bodyLines.push(
-      `The number you registered with us is based in ${countryName}.`,
-      "We are still working on SMS support outside the US and Canada.",
+      `The number you registered with us is based in ${countryName}. SMS alerts are currently available for US and Canada numbers.`,
+      "",
     );
     if (subscriber.wantsEmail && subscriber.email) {
-      bodyLines.push("In the meantime, we will send you an email alert instead.");
+      bodyLines.push(`For now, we will keep you covered with emergency email alerts at ${subscriber.email}.`, "");
     } else {
-      bodyLines.push("In the meantime, use the management link below if you want to add an alert email.");
+      bodyLines.push("For now, use the management link below if you want to add an alert email.", "");
     }
-    bodyLines.push(
-      "",
-      "For a refund, just ask: ews@kylemcdonald.net",
-      `To cancel, use the portal: ${STRIPE_BILLING_PORTAL_URL}`,
-      "",
-    );
-  } else if (!subscriber.wantsEmail || !subscriber.email) {
-    bodyLines.push("This email is for account management. You are not currently signed up for email alerts.", "");
+  } else {
+    const channelSentence = formatSignupConfirmationChannelSentence(subscriber);
+    if (channelSentence) {
+      bodyLines.push(channelSentence, "");
+    } else if (!subscriber.wantsEmail || !subscriber.email) {
+      bodyLines.push("This email is for account management. You are not currently signed up for email alerts.", "");
+    }
+
+    if (subscriber.wantsSms && subscriber.phone && smsSupported) {
+      bodyLines.push("Reply STOP to stop SMS. Message and data rates may apply.", "");
+    }
   }
 
-  const textLines = [...bodyLines, "Manage your notification settings:", managementUrl];
+  bodyLines.push(HOPEFULLY_MESSAGE, "");
 
-  if (subscriber.stripe_customer_id || subscriber.stripeCustomerId) {
-    textLines.push("", "For billing-only changes, you can also use Stripe:", STRIPE_BILLING_PORTAL_URL);
-  }
-
+  const footerLines = [managementLinkText, managementUrl, "", "Questions: ews@kylemcdonald.net", "", "Thank you for subscribing,\nKyle"];
+  const textLines = [...bodyLines, ...footerLines];
   const text = textLines.join("\n");
   const html = [
     formatHtmlParagraphs(bodyLines),
-    `<p><a href="${escapeHtml(managementUrl)}">Manage your notification settings</a></p>`,
-    subscriber.stripe_customer_id || subscriber.stripeCustomerId
-      ? `<p>For billing-only changes, you can also use Stripe:<br><a href="${escapeHtml(
-          STRIPE_BILLING_PORTAL_URL,
-        )}">Stripe billing portal</a></p>`
-      : "",
+    `<p><a href="${escapeHtml(managementUrl)}">${escapeHtml(managementLinkText)}</a></p>`,
+    formatHtmlParagraphs(["Questions: ews@kylemcdonald.net", "", "Thank you for subscribing,\nKyle"]),
   ]
     .filter(Boolean)
     .join("\n");

@@ -4296,7 +4296,7 @@ function ManageSubscriptionPage() {
 
                 {subscriber.stripeBillingPortalUrl ? (
                   <p className="signup-repeat">
-                    <a href={subscriber.stripeBillingPortalUrl}>Stripe billing portal</a>
+                    <a href={subscriber.stripeBillingPortalUrl}>Manage billing information</a>
                   </p>
                 ) : null}
               </>
