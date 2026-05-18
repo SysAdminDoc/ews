@@ -3999,10 +3999,6 @@ function SignupPage() {
         <section className="focus-grid signup-grid">
           <section className="panel hero-copy-panel signup-copy-panel">
             <h1>Apocalypse Notifications</h1>
-            <p className="signup-provider-notice">
-              Notifications are pending verification from SMS and email providers. We expect approval by 2026-05-14. If
-              you purchase a subscription now, it will be extended accordingly.
-            </p>
             <p className="hero-caption">
               Get notified when the emergency level reaches 5. Subscriptions are $5 per year and can send email, SMS,
               or both.
