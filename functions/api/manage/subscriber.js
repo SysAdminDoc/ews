@@ -12,6 +12,14 @@ import { updateStripeSubscriptionCancelAtPeriodEnd } from "../../_lib/stripe.js"
 
 const STRIPE_BILLING_PORTAL_URL = "https://billing.stripe.com/p/login/6oU7sL14I6ewbuL2dJ4ow00";
 
+function safelyIsSupportedSmsPhone(phone) {
+  try {
+    return Boolean(phone && isSupportedSmsPhone(phone));
+  } catch {
+    return false;
+  }
+}
+
 async function loadAuthorizedSubscriber(env, subscriberId, token) {
   if (!subscriberId || !token) {
     throw new HttpError(400, "Missing account management token.");
@@ -32,7 +40,7 @@ async function loadAuthorizedSubscriber(env, subscriberId, token) {
 
 async function mapManagedSubscriber(env, subscriber) {
   const hydrated = await hydrateSubscriberContacts(env, subscriber);
-  const smsSupported = hydrated.phone ? isSupportedSmsPhone(hydrated.phone) : false;
+  const smsSupported = safelyIsSupportedSmsPhone(hydrated.phone);
   return {
     id: hydrated.id,
     status: hydrated.status,

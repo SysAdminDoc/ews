@@ -583,6 +583,15 @@ export async function hydrateSubscriberContacts(env, subscriber) {
     decryptString(env, subscriber.account_email_cipher),
     decryptString(env, subscriber.phone_cipher),
   ]);
+  const storedPhoneCountry = String(subscriber.phone_country || "").trim() || null;
+  let phoneCountry = storedPhoneCountry;
+  if (!phoneCountry && phone) {
+    try {
+      phoneCountry = getPhoneCountry(phone);
+    } catch {
+      phoneCountry = null;
+    }
+  }
 
   return {
     ...subscriber,
@@ -593,7 +602,7 @@ export async function hydrateSubscriberContacts(env, subscriber) {
     wantsEmail: Number(subscriber.wants_email || 0) === 1,
     wantsSms: Number(subscriber.wants_sms || 0) === 1,
     source: subscriber.source || "stripe",
-    phoneCountry: subscriber.phone_country || (phone ? getPhoneCountry(phone) : null),
+    phoneCountry,
     stripeCancelAtPeriodEnd: Number(subscriber.stripe_cancel_at_period_end || 0) === 1,
   };
 }
@@ -613,6 +622,15 @@ function clampSignupConfirmationBatchLimit(value) {
   }
 
   return Math.min(limit, 10);
+}
+
+function clampSmsDeliveryIssueEmailBatchLimit(value) {
+  const limit = Math.trunc(Number(value || 25));
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return 25;
+  }
+
+  return Math.min(limit, 100);
 }
 
 export async function getSignupConfirmationBatchCandidates(env, options = {}) {
@@ -651,6 +669,97 @@ export async function getSignupConfirmationBatchCandidates(env, options = {}) {
     .all();
 
   return results || [];
+}
+
+export async function getSmsDeliveryIssueEmailCandidates(env, options = {}) {
+  const cursor = String(options.cursor || "").trim();
+  const limit = clampSmsDeliveryIssueEmailBatchLimit(options.limit);
+  const { results } = await getDb(env)
+    .prepare(
+      `
+        SELECT *
+        FROM notification_signups s
+        WHERE s.status = ?
+          AND s.id > ?
+          AND s.wants_sms = 1
+          AND s.phone_cipher IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM notification_deliveries d
+            JOIN notification_alerts a ON a.id = d.alert_id
+            WHERE d.subscriber_id = s.id
+              AND d.channel = 'sms'
+              AND d.status = 'delivered'
+              AND a.kind = 'signup_confirmation'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM notification_deliveries d
+            JOIN notification_alerts a ON a.id = d.alert_id
+            WHERE d.subscriber_id = s.id
+              AND d.channel = 'email'
+              AND d.status IN ('sent', 'delivered')
+              AND a.kind = 'sms_delivery_issue'
+          )
+        ORDER BY s.id ASC
+        LIMIT ?
+      `,
+    )
+    .bind(SUBSCRIBER_STATUS.ACTIVE, cursor, limit)
+    .all();
+
+  return results || [];
+}
+
+export async function getSignupSmsDeliveryIssueState(env, subscriberId) {
+  if (!subscriberId) {
+    return null;
+  }
+
+  const db = getDb(env);
+  const subscriber = await db.prepare("SELECT * FROM notification_signups WHERE id = ?").bind(subscriberId).first();
+  if (!subscriber) {
+    return null;
+  }
+
+  const smsStats =
+    (await db
+      .prepare(
+        `
+          SELECT
+            SUM(CASE WHEN d.status = 'delivered' THEN 1 ELSE 0 END) AS delivered_count,
+            SUM(CASE WHEN d.status IN ('failed', 'undelivered') THEN 1 ELSE 0 END) AS unsuccessful_count
+          FROM notification_deliveries d
+          JOIN notification_alerts a ON a.id = d.alert_id
+          WHERE d.subscriber_id = ?
+            AND d.channel = 'sms'
+            AND a.kind = 'signup_confirmation'
+        `,
+      )
+      .bind(subscriberId)
+      .first()) || {};
+  const issueEmailStats =
+    (await db
+      .prepare(
+        `
+          SELECT COUNT(*) AS sent_count
+          FROM notification_deliveries d
+          JOIN notification_alerts a ON a.id = d.alert_id
+          WHERE d.subscriber_id = ?
+            AND d.channel = 'email'
+            AND d.status IN ('sent', 'delivered')
+            AND a.kind = 'sms_delivery_issue'
+        `,
+      )
+      .bind(subscriberId)
+      .first()) || {};
+
+  return {
+    subscriber,
+    deliveredSignupSmsCount: Number(smsStats.delivered_count || 0),
+    unsuccessfulSignupSmsCount: Number(smsStats.unsuccessful_count || 0),
+    smsDeliveryIssueEmailSentCount: Number(issueEmailStats.sent_count || 0),
+  };
 }
 
 export async function createManualSubscriber(env, payload = {}, requestContext = {}) {
@@ -1690,9 +1799,15 @@ export async function updateDeliveryByProviderMessageId(env, providerMessageId, 
   const existing = await db
     .prepare(
       `
-        SELECT id, alert_id
-        FROM notification_deliveries
-        WHERE provider_message_id = ?
+        SELECT
+          d.id,
+          d.alert_id,
+          d.subscriber_id,
+          d.channel,
+          a.kind
+        FROM notification_deliveries d
+        JOIN notification_alerts a ON a.id = d.alert_id
+        WHERE d.provider_message_id = ?
         LIMIT 1
       `,
     )
@@ -1717,7 +1832,12 @@ export async function updateDeliveryByProviderMessageId(env, providerMessageId, 
     .run();
 
   await recalculateAlertDeliveryCounts(env, existing.alert_id);
-  return existing.alert_id;
+  return {
+    alertId: existing.alert_id,
+    subscriberId: existing.subscriber_id,
+    channel: existing.channel,
+    kind: existing.kind,
+  };
 }
 
 export async function updateSmsPreferenceByPhoneHash(env, phoneHash, wantsSms) {

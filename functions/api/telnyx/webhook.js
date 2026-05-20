@@ -7,6 +7,7 @@ import {
 } from "../../_lib/db.js";
 import { contactHash } from "../../_lib/crypto.js";
 import { handleError, HttpError } from "../../_lib/http.js";
+import { maybeSendSmsDeliveryIssueEmail } from "../../_lib/notifications.js";
 import { updateStripeSubscriptionCancelAtPeriodEnd } from "../../_lib/stripe.js";
 import {
   classifyInboundSms,
@@ -75,15 +76,36 @@ async function handleOutboundStatus(env, eventType, payload) {
   const messageId = payload.id || null;
   const status = normalizeTelnyxMessageStatus(eventType, payload);
   const error = getTelnyxDeliveryError(payload);
-  const alertId = await updateDeliveryByProviderMessageId(env, messageId, {
+  const deliveryUpdate = await updateDeliveryByProviderMessageId(env, messageId, {
     status,
     error,
   });
+  let smsDeliveryIssueEmail = null;
+
+  if (
+    deliveryUpdate?.subscriberId &&
+    deliveryUpdate.channel === "sms" &&
+    deliveryUpdate.kind === "signup_confirmation" &&
+    ["failed", "undelivered"].includes(status)
+  ) {
+    try {
+      smsDeliveryIssueEmail = await maybeSendSmsDeliveryIssueEmail(env, deliveryUpdate.subscriberId, {
+        source: "telnyx_webhook",
+      });
+    } catch (emailError) {
+      smsDeliveryIssueEmail = {
+        ok: false,
+        sent: false,
+        error: emailError.message,
+      };
+    }
+  }
 
   return {
     messageId,
     status,
-    updated: Boolean(alertId),
+    updated: Boolean(deliveryUpdate),
+    smsDeliveryIssueEmail,
   };
 }
 

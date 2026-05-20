@@ -131,7 +131,20 @@ npm run verify:deploy-env
 npm run deploy:pages
 ```
 
-`deploy:pages` loads `.env`, builds, verifies the bundle, preserves the currently deployed RSS file, deploys to Cloudflare Pages, then runs a Playwright smoke test against the live site. For a Codex-assisted visual check, run:
+`deploy:pages` loads `.env`, builds, verifies the bundle, preserves the currently deployed RSS file, deploys to Cloudflare Pages, then runs a Playwright smoke test against the live site.
+
+For a clean local deploy, make sure `.env` includes the Cloudflare API token plus the public dashboard snapshot URLs before running the deploy script:
+
+```bash
+CLOUDFLARE_API_TOKEN=...
+VITE_DASHBOARD_URL=https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/dashboard.json
+VITE_MILITARY_DASHBOARD_URL=https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/military-dashboard.json
+VITE_UNTRACKED_DASHBOARD_URL=https://pub-49bb6a6f314c47be9b481c25e5f6ca9e.r2.dev/untracked-dashboard.json
+```
+
+If those `VITE_*` values are missing, `deploy:pages` refuses to deploy before build. If Wrangler warns that the working directory has uncommitted changes, that warning is expected when deploying an urgent local fix from a dirty checkout; the script still deploys the current built workspace and runs the live smoke test. Review `git status --short` first so unrelated local edits are not accidentally published.
+
+For a Codex-assisted visual check, run:
 
 ```bash
 npm run smoke:live:prompt

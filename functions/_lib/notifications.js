@@ -2,6 +2,8 @@ import {
   createAlertRecord,
   getActiveSubscribers,
   getMetaValue,
+  getSmsDeliveryIssueEmailCandidates,
+  getSignupSmsDeliveryIssueState,
   getSubscriberById,
   hydrateSubscriberContacts,
   recordSubscriberWelcomeSent,
@@ -18,6 +20,13 @@ import { sendTelnyxMessage } from "./telnyx.js";
 const LEVEL5_COOLDOWN_META_KEY = "level5_notification_last_sent_at";
 const DEFAULT_NOTIFICATION_URL = "https://aews.cc/";
 const LEVEL5_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_LEVEL5_NOTIFICATION_CONCURRENCY = 8;
+const DEFAULT_LEVEL5_SMS_MIN_INTERVAL_MS = 250;
+const SMS_DELIVERY_ISSUE_EMAIL_KIND = "sms_delivery_issue";
+const SMS_DELIVERY_ISSUE_EMAIL_SOURCE = "admin_sms_delivery_issue";
+const AUTO_SMS_DELIVERY_ISSUE_EMAIL_SOURCE = "auto_sms_delivery_issue";
+const DEFAULT_SMS_DELIVERY_ISSUE_EMAIL_MIN_FAILURES = 2;
+const SMS_DELIVERY_ISSUE_EMAIL_SUBJECT = "Please check your Apocalypse EWS phone number";
 export const SIGNUP_CONFIRMATION_SMS_TEXT =
   "Apocalypse Early Warning System: subscription confirmed. We will only text if emergency level reaches 5. Reply STOP to stop. Msg&data rates may apply.";
 const HOPEFULLY_MESSAGE = "Hopefully we will not need to send you a message.";
@@ -72,9 +81,9 @@ export function formatEmergencyNotification(snapshot, { test = false, alertUrl =
   const aboveExpectedCount = actualCount - expectedCount;
   const prefix = test ? "TEST ALERT: " : "";
 
-  return `${prefix}Emergency level 5. ${formatCount(actualCount)} airborne (${formatSignedCount(
+  return `${prefix}Apocalypse EWS: emergency level 5. ${formatCount(actualCount)} airborne (${formatSignedCount(
     aboveExpectedCount,
-  )} above expected). ${alertUrl}`;
+  )} vs expected). ${alertUrl}`;
 }
 
 function getAlertUrl(env) {
@@ -83,6 +92,79 @@ function getAlertUrl(env) {
 
 function getNotificationBaseUrl(env) {
   return getAlertUrl(env).replace(/\/+$/, "");
+}
+
+function getPositiveIntegerEnv(env, key, fallback, { min = 1, max = Number.POSITIVE_INFINITY } = {}) {
+  const rawValue = String(env[key] ?? "").trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const value = Math.trunc(Number(rawValue));
+  if (!Number.isFinite(value) || value < min) {
+    return fallback;
+  }
+
+  return Math.min(value, max);
+}
+
+function getLevel5NotificationConcurrency(env) {
+  return getPositiveIntegerEnv(env, "LEVEL5_NOTIFICATION_CONCURRENCY", DEFAULT_LEVEL5_NOTIFICATION_CONCURRENCY, {
+    min: 1,
+    max: 25,
+  });
+}
+
+function getLevel5SmsMinIntervalMs(env) {
+  return getPositiveIntegerEnv(env, "LEVEL5_SMS_MIN_INTERVAL_MS", DEFAULT_LEVEL5_SMS_MIN_INTERVAL_MS, {
+    min: 0,
+    max: 60_000,
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createPacer(intervalMs) {
+  if (!intervalMs) {
+    return {
+      wait: async () => {},
+    };
+  }
+
+  let nextAvailableAt = 0;
+  let chain = Promise.resolve();
+  return {
+    wait() {
+      const turn = chain.then(async () => {
+        const now = Date.now();
+        const waitMs = Math.max(0, nextAvailableAt - now);
+        nextAvailableAt = Math.max(now, nextAvailableAt) + intervalMs;
+        if (waitMs > 0) {
+          await sleep(waitMs);
+        }
+      });
+      chain = turn.catch(() => {});
+      return turn;
+    },
+  };
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(items[index], index);
+      }
+    }),
+  );
+  return results;
 }
 
 async function appendCustomerPortalLink(env, subscriber, messageText) {
@@ -107,6 +189,13 @@ function formatHtmlParagraphs(lines) {
     .filter(Boolean)
     .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`)
     .join("\n");
+}
+
+function getManagementLinkText(subscriber) {
+  const hasStripeSubscription = Boolean(subscriber.stripe_customer_id || subscriber.stripeCustomerId);
+  return hasStripeSubscription
+    ? "Manage your notification settings and billing information."
+    : "Manage your notification settings.";
 }
 
 async function sendEmail(env, { to, subject, text, html = null }) {
@@ -196,6 +285,84 @@ async function sendDelivery(env, { alertId, subscriberId, channel, destination, 
   }
 }
 
+function getEmergencyMetrics(snapshot) {
+  const signal = getEmergencySnapshotSignal(snapshot);
+  const actualCount = Number(signal?.actualConcurrentCount ?? snapshot?.current?.concurrentCount ?? 0);
+  const expectedCount = Number(signal?.expectedConcurrentCount ?? snapshot?.current?.baselineMean ?? 0);
+  const excessCount = actualCount - expectedCount;
+  return {
+    asOf: signal?.asOf || snapshot?.current?.asOf || null,
+    actualCount,
+    expectedCount,
+    excessCount,
+  };
+}
+
+function formatLevel5AsOf(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toISOString().replace(".000Z", "Z");
+}
+
+function getLevel5EmailContent(env, snapshot, subscriber, managementUrl) {
+  const metrics = getEmergencyMetrics(snapshot);
+  const asOf = formatLevel5AsOf(metrics.asOf);
+  const alertUrl = getAlertUrl(env);
+  const bodyLines = [
+    "Emergency level 5.",
+    "",
+    "Apocalypse Early Warning System detected an unusually high level of tracked aircraft activity.",
+    "",
+    "This does not mean we know there is an emergency. It means the system detected an anomaly that may potentially indicate one. There may also be unaccounted-for explanations, including major sports events, conferences, holidays, or other unusual travel patterns.",
+    "",
+    `Observed airborne aircraft: ${formatCount(metrics.actualCount)}`,
+    `Expected for this time: ${formatCount(metrics.expectedCount)}`,
+    `Difference: ${formatSignedCount(metrics.excessCount)}`,
+    ...(asOf ? [`Observation time: ${asOf}`] : []),
+    "",
+    "View the dashboard for realtime information:",
+    alertUrl,
+    "",
+    "This message was sent because you subscribed to emergency alerts. We will not send another level 5 notification for at least 24 hours.",
+    "",
+    "Manage your notification settings:",
+    managementUrl,
+  ];
+  const html = [
+    formatHtmlParagraphs([
+      "Emergency level 5.",
+      "",
+      "Apocalypse Early Warning System detected an unusually high level of tracked aircraft activity.",
+      "",
+      "This does not mean we know there is an emergency. It means the system detected an anomaly that may potentially indicate one. There may also be unaccounted-for explanations, including major sports events, conferences, holidays, or other unusual travel patterns.",
+      "",
+      `Observed airborne aircraft: ${formatCount(metrics.actualCount)}`,
+      `Expected for this time: ${formatCount(metrics.expectedCount)}`,
+      `Difference: ${formatSignedCount(metrics.excessCount)}`,
+      ...(asOf ? [`Observation time: ${asOf}`] : []),
+    ]),
+    `<p><a href="${escapeHtml(alertUrl)}">View the dashboard for realtime information</a></p>`,
+    formatHtmlParagraphs([
+      "This message was sent because you subscribed to emergency alerts. We will not send another level 5 notification for at least 24 hours.",
+    ]),
+    `<p><a href="${escapeHtml(managementUrl)}">${escapeHtml(getManagementLinkText(subscriber))}</a></p>`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    text: bodyLines.join("\n"),
+    html,
+  };
+}
+
 async function recordDeliveryPreparationFailure(env, { alertId, subscriberId, channel, destination, error }) {
   const destinationHash = await contactHash(env, channel === "sms" ? "phone" : channel, destination);
   await recordDelivery(env, {
@@ -208,20 +375,50 @@ async function recordDeliveryPreparationFailure(env, { alertId, subscriberId, ch
   });
 }
 
-async function sendAlertToSubscribers(env, { alertId, subscribers, messageText, subject, includeCustomerPortalLinks = false }) {
+async function sendAlertToSubscribers(
+  env,
+  {
+    alertId,
+    subscribers,
+    messageText,
+    subject,
+    includeCustomerPortalLinks = false,
+    emailContentFactory = null,
+    concurrency = 1,
+    smsMinIntervalMs = 0,
+  },
+) {
   const summary = {
     subscriberCount: subscribers.length,
     emailSentCount: 0,
     smsSentCount: 0,
     errorCount: 0,
+    emailEligibleCount: 0,
+    smsEligibleCount: 0,
+    smsMinIntervalMs,
+    concurrency,
   };
+  const smsPacer = createPacer(smsMinIntervalMs);
 
-  for (const subscriber of subscribers) {
+  const results = await mapWithConcurrency(subscribers, concurrency, async (subscriber) => {
+    const subscriberSummary = {
+      emailEligibleCount: 0,
+      smsEligibleCount: 0,
+      emailSentCount: 0,
+      smsSentCount: 0,
+      errorCount: 0,
+    };
     const hydrated = await hydrateSubscriberContacts(env, subscriber);
     if (hydrated.wantsEmail && hydrated.email) {
       let emailText = messageText;
+      let emailHtml = null;
       try {
-        if (includeCustomerPortalLinks) {
+        if (emailContentFactory) {
+          const managementUrl = await createAccountManagementLink(env, hydrated, { baseUrl: getNotificationBaseUrl(env) });
+          const content = await emailContentFactory(hydrated, managementUrl);
+          emailText = content.text;
+          emailHtml = content.html || null;
+        } else if (includeCustomerPortalLinks) {
           emailText = await appendCustomerPortalLink(env, hydrated, messageText);
         }
       } catch (error) {
@@ -232,26 +429,30 @@ async function sendAlertToSubscribers(env, { alertId, subscribers, messageText, 
           destination: hydrated.email,
           error,
         });
-        summary.errorCount += 1;
-        continue;
+        subscriberSummary.errorCount += 1;
+        return subscriberSummary;
       }
 
+      subscriberSummary.emailEligibleCount += 1;
       const result = await sendDelivery(env, {
         alertId,
         subscriberId: hydrated.id,
         channel: "email",
         destination: hydrated.email,
         text: emailText,
+        html: emailHtml,
         subject,
       });
       if (result.ok) {
-        summary.emailSentCount += 1;
+        subscriberSummary.emailSentCount += 1;
       } else {
-        summary.errorCount += 1;
+        subscriberSummary.errorCount += 1;
       }
     }
 
-    if (hydrated.wantsSms && hydrated.phone && isSupportedSmsPhone(hydrated.phone)) {
+    if (hydrated.wantsSms && hydrated.phone && safelyIsSupportedSmsPhone(hydrated.phone)) {
+      subscriberSummary.smsEligibleCount += 1;
+      await smsPacer.wait();
       const result = await sendDelivery(env, {
         alertId,
         subscriberId: hydrated.id,
@@ -260,11 +461,21 @@ async function sendAlertToSubscribers(env, { alertId, subscribers, messageText, 
         text: messageText,
       });
       if (result.ok) {
-        summary.smsSentCount += 1;
+        subscriberSummary.smsSentCount += 1;
       } else {
-        summary.errorCount += 1;
+        subscriberSummary.errorCount += 1;
       }
     }
+
+    return subscriberSummary;
+  });
+
+  for (const result of results) {
+    summary.emailEligibleCount += Number(result.emailEligibleCount || 0);
+    summary.smsEligibleCount += Number(result.smsEligibleCount || 0);
+    summary.emailSentCount += Number(result.emailSentCount || 0);
+    summary.smsSentCount += Number(result.smsSentCount || 0);
+    summary.errorCount += Number(result.errorCount || 0);
   }
 
   summary.status = summary.errorCount > 0 ? "completed_with_errors" : "sent";
@@ -273,7 +484,7 @@ async function sendAlertToSubscribers(env, { alertId, subscribers, messageText, 
 }
 
 function formatSignupConfirmationChannelSentence(subscriber) {
-  const hasSupportedSms = Boolean(subscriber.wantsSms && subscriber.phone && isSupportedSmsPhone(subscriber.phone));
+  const hasSupportedSms = Boolean(subscriber.wantsSms && safelyIsSupportedSmsPhone(subscriber.phone));
   const hasEmailAlerts = Boolean(subscriber.wantsEmail && subscriber.email);
 
   if (hasSupportedSms && hasEmailAlerts) {
@@ -290,12 +501,9 @@ function formatSignupConfirmationChannelSentence(subscriber) {
 }
 
 function getSignupConfirmationEmailContent(subscriber, managementUrl) {
-  const smsSupported = subscriber.phone ? isSupportedSmsPhone(subscriber.phone) : false;
+  const smsSupported = safelyIsSupportedSmsPhone(subscriber.phone);
   const hasUnsupportedSms = Boolean(subscriber.wantsSms && subscriber.phone && !smsSupported);
-  const hasStripeSubscription = Boolean(subscriber.stripe_customer_id || subscriber.stripeCustomerId);
-  const managementLinkText = hasStripeSubscription
-    ? "Manage your notification settings and billing information."
-    : "Manage your notification settings.";
+  const managementLinkText = getManagementLinkText(subscriber);
 
   const bodyLines = ["You're subscribed to Apocalypse Early Warning System.", ""];
 
@@ -335,6 +543,354 @@ function getSignupConfirmationEmailContent(subscriber, managementUrl) {
   return { text, html };
 }
 
+function safelyIsSupportedSmsPhone(phone) {
+  try {
+    return Boolean(phone && isSupportedSmsPhone(phone));
+  } catch {
+    return false;
+  }
+}
+
+function getSmsDeliveryIssueEmailVariant(subscriber) {
+  const hasStripeSubscription = Boolean(subscriber.stripe_customer_id || subscriber.stripeCustomerId);
+  const hasEmailAlerts = Boolean(subscriber.wantsEmail && subscriber.email);
+  const source = hasStripeSubscription ? "stripe" : "manual";
+  const emailMode = hasEmailAlerts ? "email_alerts_enabled" : "management_email_only";
+  return `${source}_${emailMode}`;
+}
+
+function getSmsDeliveryIssueEmailContent(subscriber, managementUrl) {
+  const managementLinkText = getManagementLinkText(subscriber);
+  const hasEmailAlerts = Boolean(subscriber.wantsEmail && subscriber.email);
+  const bodyLines = [
+    "You're still subscribed to Apocalypse Early Warning System.",
+    "",
+    "We tried to send your SMS confirmation, but we could not confirm that it was delivered.",
+    "",
+    "This is affecting a small number of subscribers, around 4%. It can happen if there is a typo in the phone number, if the number cannot receive this kind of SMS, or if the message was filtered by the carrier.",
+    "",
+  ];
+  const managementPrompt = hasEmailAlerts
+    ? "Please check your phone number and notification settings here:"
+    : "Please check your phone number and notification settings here. Use this link if you want email alerts:";
+  const fallbackLines = hasEmailAlerts
+    ? [`If SMS is not working for your number, we will keep you covered with emergency email alerts at ${subscriber.email}.`, ""]
+    : [];
+  const closingLines = [HOPEFULLY_MESSAGE, "", "Questions: ews@kylemcdonald.net", "", "Thank you for subscribing,\nKyle"];
+  const textLines = [...bodyLines, managementPrompt, "", managementLinkText, managementUrl, "", ...fallbackLines, ...closingLines];
+  const text = textLines.join("\n");
+  const html = [
+    formatHtmlParagraphs([...bodyLines, managementPrompt]),
+    `<p><a href="${escapeHtml(managementUrl)}">${escapeHtml(managementLinkText)}</a></p>`,
+    formatHtmlParagraphs([...fallbackLines, ...closingLines]),
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { text, html };
+}
+
+async function prepareSmsDeliveryIssueEmail(env, subscriber) {
+  const hydrated = await hydrateSubscriberContacts(env, subscriber);
+  if (!safelyIsSupportedSmsPhone(hydrated.phone)) {
+    return {
+      sendable: false,
+      subscriberId: hydrated.id,
+      skippedReason: "unsupported_sms_country_or_invalid_phone",
+    };
+  }
+
+  const destination = hydrated.accountEmail || hydrated.email;
+  if (!destination) {
+    return {
+      sendable: false,
+      subscriberId: hydrated.id,
+      skippedReason: "no_email_destination",
+    };
+  }
+
+  const managementUrl = await createAccountManagementLink(env, hydrated, { baseUrl: getNotificationBaseUrl(env) });
+  const content = getSmsDeliveryIssueEmailContent(hydrated, managementUrl);
+  return {
+    sendable: true,
+    subscriberId: hydrated.id,
+    destination,
+    variant: getSmsDeliveryIssueEmailVariant(hydrated),
+    subject: SMS_DELIVERY_ISSUE_EMAIL_SUBJECT,
+    text: content.text,
+    html: content.html,
+    managementUrl,
+    alertEmail: hydrated.email,
+    accountEmail: hydrated.accountEmail,
+  };
+}
+
+function makeSmsDeliveryIssuePreviewSubscriber(variant) {
+  const hasStripeSubscription = variant.startsWith("stripe_");
+  const hasEmailAlerts = variant.endsWith("_email_alerts_enabled");
+  return {
+    id: "preview",
+    created_at: "2026-01-01T00:00:00.000Z",
+    stripe_customer_id: hasStripeSubscription ? "cus_preview" : null,
+    stripeCustomerId: hasStripeSubscription ? "cus_preview" : null,
+    accountEmail: "kyle@example.com",
+    email: hasEmailAlerts ? "kyle@example.com" : null,
+    wantsEmail: hasEmailAlerts,
+  };
+}
+
+function getSmsDeliveryIssueTemplatePreview(variant) {
+  const subscriber = makeSmsDeliveryIssuePreviewSubscriber(variant);
+  const content = getSmsDeliveryIssueEmailContent(
+    subscriber,
+    "https://aews.cc/manage?subscriber=preview&token=preview",
+  );
+  return {
+    variant,
+    subject: SMS_DELIVERY_ISSUE_EMAIL_SUBJECT,
+    text: content.text,
+    html: content.html,
+  };
+}
+
+function countSmsDeliveryIssueSummary(summary, key, value = 1) {
+  summary[key] = Number(summary[key] || 0) + value;
+}
+
+function getSmsDeliveryIssueEmailMinFailures(env) {
+  const configuredValue = Math.trunc(Number(env.SMS_DELIVERY_ISSUE_EMAIL_MIN_FAILURES || 0));
+  if (Number.isFinite(configuredValue) && configuredValue > 0) {
+    return configuredValue;
+  }
+
+  return DEFAULT_SMS_DELIVERY_ISSUE_EMAIL_MIN_FAILURES;
+}
+
+export async function previewSmsDeliveryIssueEmails(env) {
+  const summary = {
+    ok: true,
+    candidateCount: 0,
+    sendableCount: 0,
+    skippedCount: 0,
+    countsByVariant: {},
+    skippedReasons: {},
+    previews: [],
+  };
+  const previewVariants = new Set();
+  let cursor = "";
+
+  while (true) {
+    const candidates = await getSmsDeliveryIssueEmailCandidates(env, { cursor, limit: 100 });
+    if (!candidates.length) {
+      break;
+    }
+
+    for (const candidate of candidates) {
+      summary.candidateCount += 1;
+      const prepared = await prepareSmsDeliveryIssueEmail(env, candidate);
+      if (!prepared.sendable) {
+        summary.skippedCount += 1;
+        countSmsDeliveryIssueSummary(summary.skippedReasons, prepared.skippedReason);
+        continue;
+      }
+
+      summary.sendableCount += 1;
+      countSmsDeliveryIssueSummary(summary.countsByVariant, prepared.variant);
+      previewVariants.add(prepared.variant);
+    }
+
+    cursor = candidates.at(-1)?.id || cursor;
+    if (candidates.length < 100) {
+      break;
+    }
+  }
+
+  summary.previews = Array.from(previewVariants)
+    .sort()
+    .map((variant) => ({
+      count: summary.countsByVariant[variant] || 0,
+      ...getSmsDeliveryIssueTemplatePreview(variant),
+    }));
+  return summary;
+}
+
+export async function maybeSendSmsDeliveryIssueEmail(env, subscriberId, options = {}) {
+  const state = await getSignupSmsDeliveryIssueState(env, subscriberId);
+  const minFailures = getSmsDeliveryIssueEmailMinFailures(env);
+  if (!state?.subscriber) {
+    return {
+      ok: true,
+      sent: false,
+      reason: "subscriber_not_found",
+    };
+  }
+  if (state.subscriber.status !== "active") {
+    return {
+      ok: true,
+      sent: false,
+      reason: "subscriber_not_active",
+    };
+  }
+  if (state.deliveredSignupSmsCount > 0) {
+    return {
+      ok: true,
+      sent: false,
+      reason: "signup_sms_already_delivered",
+    };
+  }
+  if (state.smsDeliveryIssueEmailSentCount > 0) {
+    return {
+      ok: true,
+      sent: false,
+      reason: "sms_delivery_issue_email_already_sent",
+    };
+  }
+  if (state.unsuccessfulSignupSmsCount < minFailures) {
+    return {
+      ok: true,
+      sent: false,
+      reason: "not_enough_unsuccessful_sms_attempts",
+      unsuccessfulSignupSmsCount: state.unsuccessfulSignupSmsCount,
+      minFailures,
+    };
+  }
+
+  const prepared = await prepareSmsDeliveryIssueEmail(env, state.subscriber);
+  if (!prepared.sendable) {
+    return {
+      ok: true,
+      sent: false,
+      reason: prepared.skippedReason,
+      unsuccessfulSignupSmsCount: state.unsuccessfulSignupSmsCount,
+      minFailures,
+    };
+  }
+
+  const alertId = await createAlertRecord(env, {
+    kind: SMS_DELIVERY_ISSUE_EMAIL_KIND,
+    source: options.source || AUTO_SMS_DELIVERY_ISSUE_EMAIL_SOURCE,
+    level: null,
+    slotKey: null,
+    messageText: "SMS delivery issue email",
+  });
+  const result = await sendDelivery(env, {
+    alertId,
+    subscriberId: prepared.subscriberId,
+    channel: "email",
+    destination: prepared.destination,
+    text: prepared.text,
+    html: prepared.html,
+    subject: prepared.subject,
+  });
+  const summary = {
+    status: result.ok ? "sent" : "completed_with_errors",
+    subscriberCount: 1,
+    emailSentCount: result.ok ? 1 : 0,
+    smsSentCount: 0,
+    errorCount: result.ok ? 0 : 1,
+  };
+  await updateAlertRecord(env, alertId, summary);
+
+  return {
+    ok: result.ok,
+    sent: result.ok,
+    alertId,
+    subscriberId: prepared.subscriberId,
+    unsuccessfulSignupSmsCount: state.unsuccessfulSignupSmsCount,
+    minFailures,
+    error: result.error || null,
+    ...summary,
+  };
+}
+
+export async function sendSmsDeliveryIssueEmailBatch(env, options = {}) {
+  const requestedLimit = Math.trunc(Number(options.limit || 25));
+  const effectiveLimit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 100) : 25;
+  const candidates = await getSmsDeliveryIssueEmailCandidates(env, {
+    cursor: options.cursor,
+    limit: effectiveLimit,
+  });
+  const summary = {
+    ok: true,
+    scannedCount: candidates.length,
+    sentSubscriberCount: 0,
+    skippedSubscriberCount: 0,
+    emailSentCount: 0,
+    errorCount: 0,
+    errors: [],
+    nextCursor: candidates.at(-1)?.id || String(options.cursor || "").trim(),
+    done: candidates.length === 0,
+  };
+  let alertId = null;
+
+  for (const candidate of candidates) {
+    try {
+      const prepared = await prepareSmsDeliveryIssueEmail(env, candidate);
+      if (!prepared.sendable) {
+        summary.skippedSubscriberCount += 1;
+        continue;
+      }
+
+      if (!alertId) {
+        alertId = await createAlertRecord(env, {
+          kind: SMS_DELIVERY_ISSUE_EMAIL_KIND,
+          source: options.source || SMS_DELIVERY_ISSUE_EMAIL_SOURCE,
+          level: null,
+          slotKey: null,
+          messageText: "SMS delivery issue email",
+        });
+      }
+
+      const result = await sendDelivery(env, {
+        alertId,
+        subscriberId: prepared.subscriberId,
+        channel: "email",
+        destination: prepared.destination,
+        text: prepared.text,
+        html: prepared.html,
+        subject: prepared.subject,
+      });
+      if (result.ok) {
+        summary.sentSubscriberCount += 1;
+        summary.emailSentCount += 1;
+      } else {
+        summary.ok = false;
+        summary.errorCount += 1;
+        if (summary.errors.length < 5) {
+          summary.errors.push({
+            subscriberId: prepared.subscriberId,
+            error: result.error,
+          });
+        }
+      }
+    } catch (error) {
+      summary.ok = false;
+      summary.errorCount += 1;
+      if (summary.errors.length < 5) {
+        summary.errors.push({
+          subscriberId: candidate.id,
+          error: error.message,
+        });
+      }
+    }
+  }
+
+  if (alertId) {
+    summary.status = summary.errorCount > 0 ? "completed_with_errors" : "sent";
+    await updateAlertRecord(env, alertId, {
+      status: summary.status,
+      subscriberCount: summary.sentSubscriberCount,
+      emailSentCount: summary.emailSentCount,
+      smsSentCount: 0,
+      errorCount: summary.errorCount,
+    });
+    summary.alertId = alertId;
+  }
+
+  summary.done = candidates.length < effectiveLimit;
+  return summary;
+}
+
 export async function sendSignupConfirmationToSubscriber(env, subscriberId, options = {}) {
   const subscriber = await getSubscriberById(env, subscriberId);
   if (!subscriber) {
@@ -352,7 +908,7 @@ export async function sendSignupConfirmationToSubscriber(env, subscriberId, opti
   const emailDestination = hydrated.accountEmail || hydrated.email;
   const canSendEmailConfirmation = Boolean(sendEmailConfirmation && emailDestination);
   const canSendSmsConfirmation = Boolean(
-    sendSmsConfirmation && hydrated.wantsSms && hydrated.phone && isSupportedSmsPhone(hydrated.phone),
+    sendSmsConfirmation && hydrated.wantsSms && safelyIsSupportedSmsPhone(hydrated.phone),
   );
   const summary = {
     subscriberCount: 1,
@@ -418,6 +974,13 @@ export async function sendSignupConfirmationToSubscriber(env, subscriberId, opti
       await recordSubscriberWelcomeSent(env, hydrated.id, "sms");
     } else {
       summary.errorCount += 1;
+      try {
+        await maybeSendSmsDeliveryIssueEmail(env, hydrated.id, {
+          source: AUTO_SMS_DELIVERY_ISSUE_EMAIL_SOURCE,
+        });
+      } catch {
+        // Signup confirmation delivery state should still be recorded if the follow-up email path has a transient error.
+      }
     }
   }
 
@@ -457,6 +1020,9 @@ export async function maybeSendLevel5Notifications(env, snapshot, { source = "sc
     };
   }
 
+  const triggeredAt = new Date().toISOString();
+  await setMetaValue(env, LEVEL5_COOLDOWN_META_KEY, triggeredAt);
+
   const messageText = formatEmergencyNotification(snapshot, { alertUrl: getAlertUrl(env) });
   const alertId = await createAlertRecord(env, {
     kind: "level5",
@@ -466,15 +1032,17 @@ export async function maybeSendLevel5Notifications(env, snapshot, { source = "sc
     messageText,
   });
   const subscribers = await getActiveSubscribers(env);
+  const smsMinIntervalMs = getLevel5SmsMinIntervalMs(env);
+  const concurrency = getLevel5NotificationConcurrency(env);
   const summary = await sendAlertToSubscribers(env, {
     alertId,
     subscribers,
     messageText,
     subject: "Apocalypse EWS: emergency level 5",
-    includeCustomerPortalLinks: true,
+    emailContentFactory: (subscriber, managementUrl) => getLevel5EmailContent(env, snapshot, subscriber, managementUrl),
+    concurrency,
+    smsMinIntervalMs,
   });
-
-  await setMetaValue(env, LEVEL5_COOLDOWN_META_KEY, new Date().toISOString());
 
   return {
     ok: summary.errorCount === 0,
@@ -482,6 +1050,8 @@ export async function maybeSendLevel5Notifications(env, snapshot, { source = "sc
     alertId,
     emergencyLevel,
     slotKey,
+    cooldownStartedAt: triggeredAt,
+    estimatedSmsWindowSeconds: Math.ceil((Number(summary.smsEligibleCount || 0) * smsMinIntervalMs) / 1000),
     ...summary,
   };
 }
