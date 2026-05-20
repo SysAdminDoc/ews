@@ -2,6 +2,7 @@ import { normalizePhone } from "../../_lib/contacts.js";
 import {
   markStripeSubscriptionCancelAtPeriodEnd,
   optOutSmsByPhoneHash,
+  recordInboundSmsMessage,
   updateDeliveryByProviderMessageId,
   updateSmsPreferenceByPhoneHash,
 } from "../../_lib/db.js";
@@ -30,13 +31,30 @@ function parseTelnyxEvent(rawBody) {
   }
 }
 
-async function handleInboundMessage(env, payload) {
+async function handleInboundMessage(env, event, payload) {
   const phone = normalizePhone(payload.from?.phone_number);
   if (!phone) {
     throw new HttpError(400, "Telnyx inbound message is missing a sender phone number.");
   }
 
   const action = classifyInboundSms(payload.text);
+  const inboundMessage = await recordInboundSmsMessage(env, {
+    provider: "telnyx",
+    providerMessageId: payload.id,
+    providerEventId: event.data?.id,
+    fromPhone: phone,
+    toPhone: payload.to?.[0]?.phone_number,
+    text: payload.text,
+    action,
+    status: payload.from?.status || payload.status || "received",
+    receivedAt: payload.received_at || payload.created_at || event.data?.occurred_at,
+    metadata: {
+      eventType: event.data?.event_type,
+      messageType: payload.type || null,
+      mediaCount: Array.isArray(payload.media) ? payload.media.length : 0,
+      messagingProfileId: payload.messaging_profile_id || null,
+    },
+  });
   let updatedCount = 0;
   let cancelAtPeriodEndCount = 0;
   let stripeErrorCount = 0;
@@ -66,6 +84,7 @@ async function handleInboundMessage(env, payload) {
 
   return {
     action,
+    inboundMessage,
     updatedCount,
     cancelAtPeriodEndCount,
     stripeErrorCount,
@@ -122,7 +141,7 @@ export async function onRequestPost({ request, env }) {
     const eventType = event.data.event_type;
     const payload = event.data.payload || {};
     if (eventType === "message.received") {
-      const result = await handleInboundMessage(env, payload);
+      const result = await handleInboundMessage(env, event, payload);
       return telnyxWebhookResponse({ eventType, ...result });
     }
 

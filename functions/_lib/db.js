@@ -1244,6 +1244,7 @@ export async function updateAlertRecord(env, alertId, summary) {
 }
 
 export async function recordDelivery(env, delivery) {
+  const messageTextCipher = await encryptString(env, delivery.messageText || null);
   await getDb(env)
     .prepare(
       `
@@ -1256,10 +1257,12 @@ export async function recordDelivery(env, delivery) {
           status,
           provider_message_id,
           error,
+          message_text_cipher,
+          subject,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     )
     .bind(
@@ -1271,10 +1274,141 @@ export async function recordDelivery(env, delivery) {
       delivery.status,
       delivery.providerMessageId || null,
       delivery.error ? String(delivery.error).slice(0, 1000) : null,
+      messageTextCipher,
+      delivery.subject ? String(delivery.subject).slice(0, 500) : null,
       nowIso(),
       nowIso(),
     )
     .run();
+}
+
+function getInboundSmsReceivedAt(value) {
+  const parsedTime = Date.parse(value || "");
+  return Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : nowIso();
+}
+
+async function findSubscriberByPhoneHash(env, phoneHash) {
+  if (!phoneHash) {
+    return null;
+  }
+
+  return getDb(env)
+    .prepare(
+      `
+        SELECT id
+        FROM notification_signups
+        WHERE phone_hash = ?
+        ORDER BY
+          CASE status
+            WHEN 'active' THEN 0
+            WHEN 'past_due' THEN 1
+            WHEN 'pending_checkout' THEN 2
+            ELSE 3
+          END,
+          updated_at DESC,
+          id ASC
+        LIMIT 1
+      `,
+    )
+    .bind(phoneHash)
+    .first();
+}
+
+export async function recordInboundSmsMessage(env, message = {}) {
+  const providerMessageId = String(message.providerMessageId || "").trim();
+  if (!providerMessageId) {
+    throw new HttpError(400, "Inbound SMS is missing a provider message ID.");
+  }
+
+  const fromPhone = normalizePhone(message.fromPhone);
+  if (!fromPhone) {
+    throw new HttpError(400, "Inbound SMS is missing a sender phone number.");
+  }
+
+  const toPhone = normalizePhone(message.toPhone);
+  const receivedAt = getInboundSmsReceivedAt(message.receivedAt);
+  const [fromPhoneHash, fromPhoneCipher, toPhoneHash, toPhoneCipher, messageTextCipher] = await Promise.all([
+    contactHash(env, "phone", fromPhone),
+    encryptString(env, fromPhone),
+    contactHash(env, "phone", toPhone),
+    encryptString(env, toPhone),
+    encryptString(env, message.text || null),
+  ]);
+  const subscriber = await findSubscriberByPhoneHash(env, fromPhoneHash);
+  const timestamp = nowIso();
+
+  await getDb(env)
+    .prepare(
+      `
+        INSERT INTO notification_inbound_messages (
+          id,
+          provider,
+          provider_message_id,
+          provider_event_id,
+          subscriber_id,
+          channel,
+          phone_hash,
+          from_phone_hash,
+          from_phone_cipher,
+          to_phone_hash,
+          to_phone_cipher,
+          message_text_cipher,
+          action,
+          status,
+          error,
+          received_at,
+          created_at,
+          updated_at,
+          metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider, provider_message_id) DO UPDATE SET
+          provider_event_id = COALESCE(excluded.provider_event_id, notification_inbound_messages.provider_event_id),
+          subscriber_id = COALESCE(excluded.subscriber_id, notification_inbound_messages.subscriber_id),
+          phone_hash = excluded.phone_hash,
+          from_phone_hash = excluded.from_phone_hash,
+          from_phone_cipher = excluded.from_phone_cipher,
+          to_phone_hash = excluded.to_phone_hash,
+          to_phone_cipher = excluded.to_phone_cipher,
+          message_text_cipher = COALESCE(excluded.message_text_cipher, notification_inbound_messages.message_text_cipher),
+          action = COALESCE(excluded.action, notification_inbound_messages.action),
+          status = COALESCE(excluded.status, notification_inbound_messages.status),
+          error = excluded.error,
+          received_at = excluded.received_at,
+          updated_at = excluded.updated_at,
+          metadata_json = COALESCE(excluded.metadata_json, notification_inbound_messages.metadata_json)
+      `,
+    )
+    .bind(
+      crypto.randomUUID(),
+      String(message.provider || "telnyx"),
+      providerMessageId,
+      String(message.providerEventId || "").trim() || null,
+      subscriber?.id || null,
+      "sms",
+      fromPhoneHash,
+      fromPhoneHash,
+      fromPhoneCipher,
+      toPhoneHash,
+      toPhoneCipher,
+      messageTextCipher,
+      String(message.action || "").trim() || null,
+      String(message.status || "received").trim() || "received",
+      message.error ? String(message.error).slice(0, 1000) : null,
+      receivedAt,
+      timestamp,
+      timestamp,
+      message.metadata ? JSON.stringify(message.metadata).slice(0, 2000) : null,
+    )
+    .run();
+
+  return {
+    provider: String(message.provider || "telnyx"),
+    providerMessageId,
+    subscriberId: subscriber?.id || null,
+    phoneHash: fromPhoneHash,
+    receivedAt,
+  };
 }
 
 export async function getRecentAlertDeliveries(env, limit = 25) {
@@ -1538,6 +1672,150 @@ async function mapAdminSubscriberRow(env, row, options = {}) {
     deliveryErrorCount: Number(row.delivery_error_count || 0),
     lastDeliveryAt: row.last_delivery_at,
     managementUrl,
+  };
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function clampHistoryLimit(value) {
+  const limit = Math.trunc(Number(value || 200));
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return 200;
+  }
+
+  return Math.min(limit, 500);
+}
+
+async function mapOutboundHistoryRow(env, row) {
+  const messageText = (await decryptString(env, row.message_text_cipher)) || row.alert_message_text || null;
+  return {
+    id: row.id,
+    direction: "outbound",
+    channel: row.channel,
+    kind: row.kind,
+    source: row.source,
+    status: row.delivery_status,
+    subject: row.subject,
+    messageText,
+    providerMessageId: row.provider_message_id,
+    alertId: row.alert_id,
+    error: row.error,
+    occurredAt: row.delivery_updated_at || row.delivery_created_at,
+    createdAt: row.delivery_created_at,
+    updatedAt: row.delivery_updated_at,
+  };
+}
+
+async function mapInboundHistoryRow(env, row) {
+  const [fromPhone, toPhone, messageText] = await Promise.all([
+    decryptString(env, row.from_phone_cipher),
+    decryptString(env, row.to_phone_cipher),
+    decryptString(env, row.message_text_cipher),
+  ]);
+
+  return {
+    id: row.id,
+    direction: "inbound",
+    channel: row.channel || "sms",
+    kind: "sms_reply",
+    source: row.provider,
+    status: row.status,
+    action: row.action,
+    fromPhone,
+    toPhone,
+    messageText,
+    providerMessageId: row.provider_message_id,
+    providerEventId: row.provider_event_id,
+    error: row.error,
+    occurredAt: row.received_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getAdminSubscriberMessageHistory(env, subscriberId, options = {}) {
+  const subscriber = await getSubscriberById(env, subscriberId);
+  if (!subscriber) {
+    throw new HttpError(404, "Subscriber not found.");
+  }
+
+  const limit = clampHistoryLimit(options.limit);
+  const subscriberResult = await mapAdminSubscriberRow(env, subscriber, options);
+  const emailHashes = uniqueValues([subscriber.email_hash, subscriber.account_email_hash]);
+  const phoneHashes = uniqueValues([subscriber.phone_hash]);
+  const outboundClauses = ["d.subscriber_id = ?"];
+  const outboundParams = [subscriber.id];
+
+  if (emailHashes.length) {
+    outboundClauses.push(`(d.channel = 'email' AND d.destination_hash IN (${emailHashes.map(() => "?").join(", ")}))`);
+    outboundParams.push(...emailHashes);
+  }
+  if (phoneHashes.length) {
+    outboundClauses.push(`(d.channel = 'sms' AND d.destination_hash IN (${phoneHashes.map(() => "?").join(", ")}))`);
+    outboundParams.push(...phoneHashes);
+  }
+
+  const { results: outboundRows = [] } = await getDb(env)
+    .prepare(
+      `
+        SELECT
+          d.id,
+          d.alert_id,
+          d.subscriber_id,
+          d.channel,
+          d.status AS delivery_status,
+          d.provider_message_id,
+          d.error,
+          d.message_text_cipher,
+          d.subject,
+          d.created_at AS delivery_created_at,
+          d.updated_at AS delivery_updated_at,
+          a.kind,
+          a.source,
+          a.level,
+          a.message_text AS alert_message_text,
+          a.created_at AS alert_created_at
+        FROM notification_deliveries d
+        JOIN notification_alerts a ON a.id = d.alert_id
+        WHERE ${outboundClauses.join(" OR ")}
+        ORDER BY COALESCE(d.updated_at, d.created_at) DESC
+        LIMIT ?
+      `,
+    )
+    .bind(...outboundParams, limit)
+    .all();
+
+  let inboundRows = [];
+  if (phoneHashes.length) {
+    const inboundQuery = getDb(env).prepare(
+      `
+        SELECT *
+        FROM notification_inbound_messages
+        WHERE subscriber_id = ?
+          OR phone_hash IN (${phoneHashes.map(() => "?").join(", ")})
+        ORDER BY received_at DESC
+        LIMIT ?
+      `,
+    );
+    const inboundResult = await inboundQuery.bind(subscriber.id, ...phoneHashes, limit).all();
+    inboundRows = inboundResult.results || [];
+  }
+
+  const [outboundMessages, inboundMessages] = await Promise.all([
+    Promise.all(outboundRows.map((row) => mapOutboundHistoryRow(env, row))),
+    Promise.all(inboundRows.map((row) => mapInboundHistoryRow(env, row))),
+  ]);
+  const messages = [...outboundMessages, ...inboundMessages]
+    .sort((left, right) => String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")))
+    .slice(0, limit);
+
+  return {
+    subscriber: subscriberResult,
+    messages,
+    total: messages.length,
+    limit,
   };
 }
 

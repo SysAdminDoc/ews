@@ -1323,6 +1323,56 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+.history-contact-summary {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #cccccc;
+  background: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.history-contact-summary strong,
+.history-contact-summary span,
+.history-contact-summary a {
+  display: block;
+}
+
+.message-history-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.message-history-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.message-history-table th,
+.message-history-table td {
+  padding: 8px;
+  border: 1px solid #cccccc;
+  vertical-align: top;
+  text-align: left;
+}
+
+.message-history-table th {
+  background: #f7f7f7;
+}
+
+.message-history-table td {
+  overflow-wrap: anywhere;
+}
+
+.message-history-table td > strong,
+.message-history-table td > span,
+.message-history-table td > em {
+  display: block;
+}
+
 .chart-frame {
   margin-top: 12px;
 }

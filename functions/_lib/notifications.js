@@ -268,6 +268,8 @@ async function sendDelivery(env, { alertId, subscriberId, channel, destination, 
       destinationHash,
       status: "sent",
       providerMessageId: result.id,
+      messageText: text,
+      subject,
     });
 
     return { ok: true, channel };
@@ -279,6 +281,8 @@ async function sendDelivery(env, { alertId, subscriberId, channel, destination, 
       destinationHash,
       status: "failed",
       error: error.message,
+      messageText: text,
+      subject,
     });
 
     return { ok: false, channel, error: error.message };

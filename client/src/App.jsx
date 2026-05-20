@@ -3500,6 +3500,23 @@ function formatMessagingStatusLabel(status) {
     .replace(/^\w/, (letter) => letter.toUpperCase())
 }
 
+function formatMessageHistoryLabel(value) {
+  return formatMessagingStatusLabel(value || 'unknown')
+}
+
+function formatMessageHistoryTime(value) {
+  if (!value) {
+    return 'null'
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+  }
+
+  return date.toLocaleString()
+}
+
 function createEmptySubscriberSummary() {
   return {
     total: 0,
@@ -4306,7 +4323,16 @@ function ManageSubscriptionPage() {
 
 function AdminTestAlertPage() {
   const adminPath = window.location.pathname.replace(/\/+$/, '')
-  const adminView = adminPath === '/admin/subscribers' ? 'subscribers' : adminPath === '/admin/manual' ? 'manual' : 'test'
+  const adminParams = new URLSearchParams(window.location.search)
+  const adminView =
+    adminPath === '/admin/subscribers'
+      ? 'subscribers'
+      : adminPath === '/admin/manual'
+        ? 'manual'
+        : adminPath === '/admin/history'
+          ? 'history'
+          : 'test'
+  const historySubscriberId = adminParams.get('subscriber') || ''
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -4335,6 +4361,9 @@ function AdminTestAlertPage() {
   const [manualSubmitting, setManualSubmitting] = useState(false)
   const [manualStatus, setManualStatus] = useState(null)
   const [manualResult, setManualResult] = useState(null)
+  const [messageHistory, setMessageHistory] = useState(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyStatus, setHistoryStatus] = useState(null)
   const subscriberPageCount = Math.max(1, Math.ceil(subscriberTotal / Math.max(1, subscriberPageSize)))
   const normalizedSubscriberPage = clamp(subscriberPage, 1, subscriberPageCount)
   const subscriberPageStartIndex = subscriberRecords.length ? (normalizedSubscriberPage - 1) * subscriberPageSize : 0
@@ -4379,10 +4408,45 @@ function AdminTestAlertPage() {
     }
   }, [subscriberEmailSearch])
 
+  const loadMessageHistory = useCallback(async () => {
+    const subscriberId = String(historySubscriberId || '').trim()
+    if (!subscriberId) {
+      setHistoryStatus({ tone: 'error', message: 'Missing subscriber ID.' })
+      setMessageHistory(null)
+      return
+    }
+
+    const params = new URLSearchParams({
+      subscriber: subscriberId,
+      limit: '250',
+    })
+    setHistoryLoading(true)
+    setHistoryStatus(null)
+    try {
+      const response = await fetch(`/api/admin/subscriber-history?${params.toString()}`, { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Could not load subscriber message history.')
+      }
+      setMessageHistory(payload)
+    } catch (error) {
+      setMessageHistory(null)
+      setHistoryStatus({ tone: 'error', message: error.message })
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [historySubscriberId])
+
   useEffect(() => {
     const previousTitle = document.title
     document.title =
-      adminView === 'subscribers' ? 'Subscriber Database' : adminView === 'manual' ? 'Manual Subscriber' : 'Test Emergency Alert'
+      adminView === 'subscribers'
+        ? 'Subscriber Database'
+        : adminView === 'manual'
+          ? 'Manual Subscriber'
+          : adminView === 'history'
+            ? 'Subscriber Message History'
+            : 'Test Emergency Alert'
     loadMessagingStatus()
 
     return () => {
@@ -4393,10 +4457,12 @@ function AdminTestAlertPage() {
   useEffect(() => {
     if (adminView === 'subscribers') {
       loadSubscriberRecords(normalizedSubscriberPage)
+    } else if (adminView === 'history') {
+      loadMessageHistory()
     } else if (adminView === 'test') {
       loadRecentDeliveries()
     }
-  }, [adminView, loadSubscriberRecords, normalizedSubscriberPage])
+  }, [adminView, loadMessageHistory, loadSubscriberRecords, normalizedSubscriberPage])
 
   useEffect(() => {
     if (subscriberPage !== normalizedSubscriberPage) {
@@ -4723,6 +4789,89 @@ function AdminTestAlertPage() {
                 </div>
               ) : null}
             </section>
+          ) : adminView === 'history' ? (
+            <section className="panel signup-panel admin-message-history-panel admin-wide-panel" aria-labelledby="subscriber-history-title">
+              <div className="panel-header">
+                <div>
+                  <h2 id="subscriber-history-title">Message History</h2>
+                </div>
+                <div className="subscriber-actions">
+                  <a className="subscriber-action-link" href="/admin/subscribers">
+                    Subscribers
+                  </a>
+                  <button className="signup-submit" type="button" onClick={loadMessageHistory} disabled={historyLoading}>
+                    {historyLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {historyStatus ? (
+                <p className={`signup-status signup-status-${historyStatus.tone}`} role="status">
+                  {historyStatus.message}
+                </p>
+              ) : null}
+
+              {historyLoading && !messageHistory ? <p className="empty-state">Loading message history...</p> : null}
+
+              {messageHistory?.subscriber ? (
+                <div className="history-contact-summary" aria-label="Subscriber contact summary">
+                  <strong>{formatAdminValue(messageHistory.subscriber.accountEmail || messageHistory.subscriber.email || messageHistory.subscriber.phone)}</strong>
+                  <span>Subscriber: {messageHistory.subscriber.id}</span>
+                  <span>Alert email: {formatAdminValue(messageHistory.subscriber.email)}</span>
+                  <span>Account email: {formatAdminValue(messageHistory.subscriber.accountEmail)}</span>
+                  <span>Phone: {formatAdminValue(messageHistory.subscriber.phone)}</span>
+                  <span>Status: {formatAdminValue(messageHistory.subscriber.status)}</span>
+                  {messageHistory.subscriber.managementUrl ? (
+                    <a href={messageHistory.subscriber.managementUrl}>Edit notification settings</a>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {messageHistory?.messages?.length ? (
+                <div className="message-history-table-wrap">
+                  <table className="message-history-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Direction</th>
+                        <th scope="col">Channel</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Message</th>
+                        <th scope="col">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {messageHistory.messages.map((message) => (
+                        <tr key={`${message.direction}-${message.id}`}>
+                          <td>{formatMessageHistoryTime(message.occurredAt)}</td>
+                          <td>{formatMessageHistoryLabel(message.direction)}</td>
+                          <td>{formatMessageHistoryLabel(message.channel)}</td>
+                          <td>
+                            <strong>{formatMessageHistoryLabel(message.status)}</strong>
+                            {message.action ? <span>Action: {formatMessageHistoryLabel(message.action)}</span> : null}
+                            {message.error ? <em>{message.error}</em> : null}
+                          </td>
+                          <td>
+                            {message.subject ? <strong>{message.subject}</strong> : null}
+                            <span>{formatAdminValue(message.messageText)}</span>
+                          </td>
+                          <td>
+                            <span>Kind: {formatMessageHistoryLabel(message.kind)}</span>
+                            <span>Provider: {formatAdminValue(message.source)}</span>
+                            <span>Message ID: {formatAdminValue(message.providerMessageId)}</span>
+                            {message.alertId ? <span>Alert: {message.alertId}</span> : null}
+                            {message.fromPhone ? <span>From: {message.fromPhone}</span> : null}
+                            {message.toPhone ? <span>To: {message.toPhone}</span> : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : messageHistory && !historyLoading ? (
+                <p className="empty-state">No email or SMS message history found for this subscriber.</p>
+              ) : null}
+            </section>
           ) : adminView === 'manual' ? (
             <section className="panel signup-panel" aria-labelledby="manual-subscriber-title">
               <div className="panel-header">
@@ -4993,6 +5142,12 @@ function AdminTestAlertPage() {
                                 ) : (
                                   <span>{formatAdminValue(null)}</span>
                                 )}
+                                <a
+                                  className="subscriber-action-link"
+                                  href={`/admin/history?subscriber=${encodeURIComponent(subscriber.id)}`}
+                                >
+                                  History
+                                </a>
                               </div>
                             </td>
                             <td>

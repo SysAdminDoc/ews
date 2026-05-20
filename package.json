@@ -14,6 +14,7 @@
     "pages:dev": "npm run build --workspace client -- --mode development && npx wrangler pages dev client/dist",
     "d1:migrate:local": "npx wrangler d1 migrations apply ews-notifications --local",
     "d1:migrate:remote": "npx wrangler d1 migrations apply ews-notifications --remote",
+    "backfill:telnyx-inbound": "node scripts/backfill_telnyx_inbound_sms.js",
     "build": "npm run build --workspace client && npm run verify:dashboard-urls",
     "preview": "npm run preview --workspace client",
     "verify:deploy-env": "node scripts/check_deploy_env.js",
