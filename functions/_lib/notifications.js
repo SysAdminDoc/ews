@@ -1154,3 +1154,88 @@ export async function sendAdminSingleTest(env, { email, phone }) {
     ...summary,
   };
 }
+
+function normalizeAdminReplyText(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    throw new HttpError(400, "Enter a text reply.");
+  }
+  if (text.length > 1600) {
+    throw new HttpError(400, "Text replies must be 1600 characters or fewer.");
+  }
+
+  return text;
+}
+
+export async function sendAdminSubscriberSmsReply(env, subscriberId, text) {
+  const subscriber = await getSubscriberById(env, subscriberId);
+  if (!subscriber) {
+    throw new HttpError(404, "Subscriber not found.");
+  }
+
+  const hydrated = await hydrateSubscriberContacts(env, subscriber);
+  if (!hydrated.phone) {
+    throw new HttpError(400, "Subscriber does not have a phone number.");
+  }
+  if (!isSupportedSmsPhone(hydrated.phone)) {
+    throw new HttpError(400, "SMS replies currently support US and Canada phone numbers only.");
+  }
+
+  const messageText = normalizeAdminReplyText(text);
+  const alertId = await createAlertRecord(env, {
+    kind: "admin_sms_reply",
+    source: "admin",
+    level: null,
+    slotKey: null,
+    messageText,
+  });
+  const destinationHash = await contactHash(env, "phone", hydrated.phone);
+
+  try {
+    const result = await sendTelnyxMessage(env, { to: hydrated.phone, text: messageText });
+    await recordDelivery(env, {
+      alertId,
+      subscriberId: hydrated.id,
+      channel: "sms",
+      destinationHash,
+      status: "sent",
+      providerMessageId: result.id,
+      providerStatus: result.providerStatus || null,
+      messageText,
+    });
+    await updateAlertRecord(env, alertId, {
+      status: "sent",
+      subscriberCount: 1,
+      emailSentCount: 0,
+      smsSentCount: 1,
+      errorCount: 0,
+    });
+
+    return {
+      alertId,
+      subscriberId: hydrated.id,
+      phone: hydrated.phone,
+      providerMessageId: result.id,
+      providerStatus: result.providerStatus || null,
+      status: "sent",
+    };
+  } catch (error) {
+    await recordDelivery(env, {
+      alertId,
+      subscriberId: hydrated.id,
+      channel: "sms",
+      destinationHash,
+      status: "failed",
+      error: error.message,
+      messageText,
+    });
+    await updateAlertRecord(env, alertId, {
+      status: "completed_with_errors",
+      subscriberCount: 1,
+      emailSentCount: 0,
+      smsSentCount: 0,
+      errorCount: 1,
+    });
+    throw error instanceof HttpError ? error : new HttpError(502, error.message || "Could not send text reply.");
+  }
+}

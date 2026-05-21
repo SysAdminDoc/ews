@@ -43,6 +43,8 @@ const BACKGROUND_URL = '/backgrounds/soft-cartoon-tile-15.webp'
 const BACKGROUND_PRELOAD_LINK_ID = 'background-preload'
 const SUBSCRIBERS_PER_PAGE = 20
 const SUBSCRIPTION_GROSS_DOLLARS = 5
+const MESSAGE_HISTORY_POLL_INTERVAL_MS = 15_000
+const ADMIN_REPLY_MAX_LENGTH = 1600
 const PHONE_VALIDATION_MESSAGE = 'Enter a valid phone number. Use 10 digits for US/Canada, or + and country code for international numbers.'
 const NON_US_CANADA_PHONE_WARNING = 'We do not currently support non-US/Canada phone numbers, continue anyway?'
 const SUPPORTED_SMS_COUNTRY_CODES = new Set(['US', 'CA'])
@@ -3517,6 +3519,44 @@ function formatMessageHistoryTime(value) {
   return date.toLocaleString()
 }
 
+function getMessageHistoryTimestamp(message) {
+  const timestamp = Date.parse(message?.occurredAt || message?.updatedAt || message?.createdAt || '')
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function compareMessageHistoryAscending(left, right) {
+  const timeDiff = getMessageHistoryTimestamp(left) - getMessageHistoryTimestamp(right)
+  if (timeDiff !== 0) {
+    return timeDiff
+  }
+
+  return String(left?.id || '').localeCompare(String(right?.id || ''))
+}
+
+function getSmsConversationMessages(messages) {
+  if (!Array.isArray(messages)) {
+    return []
+  }
+
+  return messages
+    .filter((message) => String(message.channel || '').toLowerCase() === 'sms')
+    .slice()
+    .sort(compareMessageHistoryAscending)
+}
+
+function formatSmsDeliveryStatus(message) {
+  if (message?.error) {
+    return 'Failed'
+  }
+
+  const status = String(message?.status || message?.providerStatus || '').trim()
+  return formatMessageHistoryLabel(status || 'sent')
+}
+
+function isSmsDeliveryError(message) {
+  return Boolean(message?.error || ['failed', 'undelivered'].includes(String(message?.status || '').toLowerCase()))
+}
+
 function createEmptySubscriberSummary() {
   return {
     total: 0,
@@ -3527,6 +3567,7 @@ function createEmptySubscriberSummary() {
     wantsEmail: 0,
     wantsSms: 0,
     wantsBoth: 0,
+    smsReplies: 0,
   }
 }
 
@@ -3543,6 +3584,9 @@ function getSubscriberSummary(subscribers) {
       }
       if (subscriber.wantsEmail && subscriber.wantsSms) {
         summary.wantsBoth += 1
+      }
+      if (Number(subscriber.smsReplyCount || 0) > 0) {
+        summary.smsReplies += 1
       }
       return summary
     },
@@ -3597,6 +3641,8 @@ function getSubscriberFields(subscriber) {
     ['smsDeliveryCount', subscriber.smsDeliveryCount],
     ['deliveryErrorCount', subscriber.deliveryErrorCount],
     ['lastDeliveryAt', subscriber.lastDeliveryAt],
+    ['smsReplyCount', subscriber.smsReplyCount],
+    ['lastSmsReplyAt', subscriber.lastSmsReplyAt],
   ]
 }
 
@@ -3692,6 +3738,7 @@ function normalizeSubscriberSummary(value) {
     wantsEmail: Number(summary.wantsEmail || 0),
     wantsSms: Number(summary.wantsSms || 0),
     wantsBoth: Number(summary.wantsBoth || 0),
+    smsReplies: Number(summary.smsReplies || 0),
   }
 }
 
@@ -4325,13 +4372,15 @@ function AdminTestAlertPage() {
   const adminPath = window.location.pathname.replace(/\/+$/, '')
   const adminParams = new URLSearchParams(window.location.search)
   const adminView =
-    adminPath === '/admin/subscribers'
+    adminPath === '/admin' || adminPath === '/admin/subscribers'
       ? 'subscribers'
       : adminPath === '/admin/manual'
         ? 'manual'
         : adminPath === '/admin/history'
           ? 'history'
-          : 'test'
+          : adminPath === '/admin/test-alert'
+            ? 'test'
+            : 'subscribers'
   const historySubscriberId = adminParams.get('subscriber') || ''
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
@@ -4351,6 +4400,7 @@ function AdminTestAlertPage() {
   const [subscriberPage, setSubscriberPage] = useState(1)
   const [subscriberSearchInput, setSubscriberSearchInput] = useState('')
   const [subscriberEmailSearch, setSubscriberEmailSearch] = useState('')
+  const [subscriberRepliesOnly, setSubscriberRepliesOnly] = useState(false)
   const [manualAccountEmail, setManualAccountEmail] = useState('')
   const [manualAlertEmail, setManualAlertEmail] = useState('')
   const [manualPhone, setManualPhone] = useState('')
@@ -4364,6 +4414,9 @@ function AdminTestAlertPage() {
   const [messageHistory, setMessageHistory] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyStatus, setHistoryStatus] = useState(null)
+  const [replyText, setReplyText] = useState('')
+  const [replySubmitting, setReplySubmitting] = useState(false)
+  const [replyStatus, setReplyStatus] = useState(null)
   const subscriberPageCount = Math.max(1, Math.ceil(subscriberTotal / Math.max(1, subscriberPageSize)))
   const normalizedSubscriberPage = clamp(subscriberPage, 1, subscriberPageCount)
   const subscriberPageStartIndex = subscriberRecords.length ? (normalizedSubscriberPage - 1) * subscriberPageSize : 0
@@ -4371,7 +4424,7 @@ function AdminTestAlertPage() {
 
   useInitialLoaderDismissed()
 
-  const loadSubscriberRecords = useCallback(async (page = 1, emailSearch = subscriberEmailSearch) => {
+  const loadSubscriberRecords = useCallback(async (page = 1, emailSearch = subscriberEmailSearch, repliesOnly = subscriberRepliesOnly) => {
     const targetPage = Math.max(1, Math.trunc(Number(page || 1)))
     const normalizedEmailSearch = String(emailSearch || '').trim()
     const params = new URLSearchParams({
@@ -4381,6 +4434,9 @@ function AdminTestAlertPage() {
     })
     if (normalizedEmailSearch) {
       params.set('emailSearch', normalizedEmailSearch)
+    }
+    if (repliesOnly) {
+      params.set('hasSmsReplies', '1')
     }
     setSubscriberLoading(true)
     setSubscriberStatus(null)
@@ -4406,9 +4462,9 @@ function AdminTestAlertPage() {
     } finally {
       setSubscriberLoading(false)
     }
-  }, [subscriberEmailSearch])
+  }, [subscriberEmailSearch, subscriberRepliesOnly])
 
-  const loadMessageHistory = useCallback(async () => {
+  const loadMessageHistory = useCallback(async ({ silent = false } = {}) => {
     const subscriberId = String(historySubscriberId || '').trim()
     if (!subscriberId) {
       setHistoryStatus({ tone: 'error', message: 'Missing subscriber ID.' })
@@ -4420,8 +4476,10 @@ function AdminTestAlertPage() {
       subscriber: subscriberId,
       limit: '250',
     })
-    setHistoryLoading(true)
-    setHistoryStatus(null)
+    if (!silent) {
+      setHistoryLoading(true)
+      setHistoryStatus(null)
+    }
     try {
       const response = await fetch(`/api/admin/subscriber-history?${params.toString()}`, { cache: 'no-store' })
       const payload = await response.json().catch(() => ({}))
@@ -4429,11 +4487,18 @@ function AdminTestAlertPage() {
         throw new Error(payload.error || 'Could not load subscriber message history.')
       }
       setMessageHistory(payload)
+      if (silent) {
+        setHistoryStatus(null)
+      }
     } catch (error) {
-      setMessageHistory(null)
+      if (!silent) {
+        setMessageHistory(null)
+      }
       setHistoryStatus({ tone: 'error', message: error.message })
     } finally {
-      setHistoryLoading(false)
+      if (!silent) {
+        setHistoryLoading(false)
+      }
     }
   }, [historySubscriberId])
 
@@ -4459,10 +4524,22 @@ function AdminTestAlertPage() {
       loadSubscriberRecords(normalizedSubscriberPage)
     } else if (adminView === 'history') {
       loadMessageHistory()
+      const intervalId = window.setInterval(() => {
+        loadMessageHistory({ silent: true })
+      }, MESSAGE_HISTORY_POLL_INTERVAL_MS)
+      return () => {
+        window.clearInterval(intervalId)
+      }
     } else if (adminView === 'test') {
       loadRecentDeliveries()
     }
+    return undefined
   }, [adminView, loadMessageHistory, loadSubscriberRecords, normalizedSubscriberPage])
+
+  useEffect(() => {
+    setReplyText('')
+    setReplyStatus(null)
+  }, [historySubscriberId])
 
   useEffect(() => {
     if (subscriberPage !== normalizedSubscriberPage) {
@@ -4639,6 +4716,63 @@ function AdminTestAlertPage() {
     }
   }
 
+  function handleSubscriberRepliesOnlyChange(event) {
+    setSubscriberRepliesOnly(event.target.checked)
+    setSubscriberPage(1)
+  }
+
+  async function handleReplySubmit(event) {
+    event.preventDefault()
+
+    const subscriberId = String(historySubscriberId || '').trim()
+    const message = replyText.trim()
+    if (!subscriberId) {
+      setReplyStatus({ tone: 'error', message: 'Missing subscriber ID.' })
+      return
+    }
+    if (!message) {
+      setReplyStatus({ tone: 'error', message: 'Enter a text reply.' })
+      return
+    }
+    if (message.length > ADMIN_REPLY_MAX_LENGTH) {
+      setReplyStatus({ tone: 'error', message: `Text replies must be ${ADMIN_REPLY_MAX_LENGTH} characters or fewer.` })
+      return
+    }
+
+    setReplySubmitting(true)
+    setReplyStatus({ tone: 'success', message: 'Sending text reply...' })
+    try {
+      const response = await fetch('/api/admin/subscriber-history', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          subscriber: subscriberId,
+          message,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Could not send text reply.')
+      }
+
+      setReplyText('')
+      setReplyStatus({
+        tone: 'success',
+        message: `Text reply sent${payload.providerMessageId ? `: ${payload.providerMessageId}` : '.'}`,
+      })
+      await loadMessageHistory()
+    } catch (error) {
+      setReplyStatus({ tone: 'error', message: error.message })
+    } finally {
+      setReplySubmitting(false)
+    }
+  }
+
+  const smsConversationMessages = getSmsConversationMessages(messageHistory?.messages)
+  const canTextReply = Boolean(messageHistory?.subscriber?.phone)
+  const replyCharactersRemaining = ADMIN_REPLY_MAX_LENGTH - replyText.length
+  const replyDisabled = replySubmitting || !canTextReply || !replyText.trim() || replyText.length > ADMIN_REPLY_MAX_LENGTH
+
   return (
     <>
       <div className="background-wallpaper" style={{ backgroundImage: `url("${BACKGROUND_URL}")` }} aria-hidden="true" />
@@ -4652,14 +4786,14 @@ function AdminTestAlertPage() {
             <nav className="admin-tabs" aria-label="Notification admin views">
               <a
                 className={adminView === 'test' ? 'admin-tab-active' : ''}
-                href="/admin"
+                href="/admin/test-alert"
                 aria-current={adminView === 'test' ? 'page' : undefined}
               >
                 Test Alert
               </a>
               <a
                 className={adminView === 'subscribers' ? 'admin-tab-active' : ''}
-                href="/admin/subscribers"
+                href="/admin"
                 aria-current={adminView === 'subscribers' ? 'page' : undefined}
               >
                 Subscribers
@@ -4796,9 +4930,6 @@ function AdminTestAlertPage() {
                   <h2 id="subscriber-history-title">Message History</h2>
                 </div>
                 <div className="subscriber-actions">
-                  <a className="subscriber-action-link" href="/admin/subscribers">
-                    Subscribers
-                  </a>
                   <button className="signup-submit" type="button" onClick={loadMessageHistory} disabled={historyLoading}>
                     {historyLoading ? 'Loading...' : 'Refresh'}
                   </button>
@@ -4821,56 +4952,79 @@ function AdminTestAlertPage() {
                   <span>Account email: {formatAdminValue(messageHistory.subscriber.accountEmail)}</span>
                   <span>Phone: {formatAdminValue(messageHistory.subscriber.phone)}</span>
                   <span>Status: {formatAdminValue(messageHistory.subscriber.status)}</span>
+                  <span>SMS replies: {formatAdminValue(messageHistory.subscriber.smsReplyCount)}</span>
+                  <span>Last SMS reply: {formatAdminValue(messageHistory.subscriber.lastSmsReplyAt)}</span>
                   {messageHistory.subscriber.managementUrl ? (
                     <a href={messageHistory.subscriber.managementUrl}>Edit notification settings</a>
                   ) : null}
                 </div>
               ) : null}
 
-              {messageHistory?.messages?.length ? (
-                <div className="message-history-table-wrap">
-                  <table className="message-history-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Time</th>
-                        <th scope="col">Direction</th>
-                        <th scope="col">Channel</th>
-                        <th scope="col">Status</th>
-                        <th scope="col">Message</th>
-                        <th scope="col">Details</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {messageHistory.messages.map((message) => (
-                        <tr key={`${message.direction}-${message.id}`}>
-                          <td>{formatMessageHistoryTime(message.occurredAt)}</td>
-                          <td>{formatMessageHistoryLabel(message.direction)}</td>
-                          <td>{formatMessageHistoryLabel(message.channel)}</td>
-                          <td>
-                            <strong>{formatMessageHistoryLabel(message.status)}</strong>
-                            {message.action ? <span>Action: {formatMessageHistoryLabel(message.action)}</span> : null}
-                            {message.error ? <em>{message.error}</em> : null}
-                          </td>
-                          <td>
-                            {message.subject ? <strong>{message.subject}</strong> : null}
-                            <span>{formatAdminValue(message.messageText)}</span>
-                          </td>
-                          <td>
-                            <span>Kind: {formatMessageHistoryLabel(message.kind)}</span>
-                            <span>Provider: {formatAdminValue(message.source)}</span>
-                            {message.providerStatus ? <span>Provider status: {formatMessageHistoryLabel(message.providerStatus)}</span> : null}
-                            <span>Message ID: {formatAdminValue(message.providerMessageId)}</span>
-                            {message.alertId ? <span>Alert: {message.alertId}</span> : null}
-                            {message.fromPhone ? <span>From: {message.fromPhone}</span> : null}
-                            {message.toPhone ? <span>To: {message.toPhone}</span> : null}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {smsConversationMessages.length ? (
+                <div className="sms-conversation" aria-label="SMS conversation">
+                  {smsConversationMessages.map((message) => {
+                    const isOutbound = message.direction === 'outbound'
+                    const deliveryStatus = formatSmsDeliveryStatus(message)
+                    return (
+                      <article
+                        className={`sms-message-row ${isOutbound ? 'sms-message-outbound' : 'sms-message-inbound'}`}
+                        key={`${message.direction}-${message.id}`}
+                        title={formatMessageHistoryTime(message.occurredAt)}
+                        aria-label={`${formatMessageHistoryLabel(message.direction)} SMS, ${formatMessageHistoryTime(message.occurredAt)}`}
+                      >
+                        <div className="sms-bubble">
+                          {message.messageText ? (
+                            <p>{message.messageText}</p>
+                          ) : (
+                            <p className="sms-empty-text">No message text</p>
+                          )}
+                          {message.action && !isOutbound ? (
+                            <span className="sms-message-action">{formatMessageHistoryLabel(message.action)}</span>
+                          ) : null}
+                          {message.error ? <em>{message.error}</em> : null}
+                        </div>
+                        {isOutbound ? (
+                          <span className={`sms-delivery-status ${isSmsDeliveryError(message) ? 'sms-delivery-status-error' : ''}`}>
+                            {deliveryStatus}
+                          </span>
+                        ) : null}
+                      </article>
+                    )
+                  })}
                 </div>
               ) : messageHistory && !historyLoading ? (
-                <p className="empty-state">No email or SMS message history found for this subscriber.</p>
+                <p className="empty-state">No SMS message history found for this subscriber.</p>
+              ) : null}
+
+              {messageHistory?.subscriber ? (
+                <form className="sms-reply-form" onSubmit={handleReplySubmit}>
+                  <label className="signup-field">
+                    <span>Text reply</span>
+                    <textarea
+                      value={replyText}
+                      maxLength={ADMIN_REPLY_MAX_LENGTH}
+                      rows={3}
+                      disabled={replySubmitting || !canTextReply}
+                      onChange={(event) => setReplyText(event.target.value)}
+                    />
+                  </label>
+                  <div className="sms-reply-actions">
+                    <button className="signup-submit" type="submit" disabled={replyDisabled}>
+                      {replySubmitting ? 'Sending...' : 'Send Reply'}
+                    </button>
+                    <span className={replyCharactersRemaining < 0 ? 'sms-reply-count sms-reply-count-error' : 'sms-reply-count'}>
+                      {replyCharactersRemaining}
+                    </span>
+                  </div>
+                  {!canTextReply ? (
+                    <p className="signup-status signup-status-error">This subscriber does not have a phone number.</p>
+                  ) : null}
+                  {replyStatus ? (
+                    <p className={`signup-status signup-status-${replyStatus.tone}`} role="status">
+                      {replyStatus.message}
+                    </p>
+                  ) : null}
+                </form>
               ) : null}
             </section>
           ) : adminView === 'manual' ? (
@@ -5017,11 +5171,26 @@ function AdminTestAlertPage() {
                     Clear
                   </button>
                 ) : null}
+                <label className="signup-consent subscriber-filter-toggle">
+                  <input
+                    type="checkbox"
+                    checked={subscriberRepliesOnly}
+                    disabled={subscriberLoading}
+                    onChange={handleSubscriberRepliesOnlyChange}
+                  />
+                  <span>SMS replies only</span>
+                </label>
               </form>
 
-              {subscriberEmailSearch ? (
+              {subscriberEmailSearch || subscriberRepliesOnly ? (
                 <p className="subscriber-search-note">
-                  Search: <strong>{subscriberEmailSearch}</strong>
+                  {subscriberEmailSearch ? (
+                    <>
+                      Search: <strong>{subscriberEmailSearch}</strong>
+                    </>
+                  ) : null}
+                  {subscriberEmailSearch && subscriberRepliesOnly ? ' / ' : null}
+                  {subscriberRepliesOnly ? <strong>SMS replies only</strong> : null}
                 </p>
               ) : null}
 
@@ -5034,6 +5203,7 @@ function AdminTestAlertPage() {
                 <span>Email: {subscriberSummary.wantsEmail}</span>
                 <span>SMS: {subscriberSummary.wantsSms}</span>
                 <span>Both: {subscriberSummary.wantsBoth}</span>
+                <span>SMS replies: {subscriberSummary.smsReplies}</span>
                 <span>Gross: {formatGrossVolume(subscriberSummary.active * SUBSCRIPTION_GROSS_DOLLARS)}</span>
               </div>
 
@@ -5133,6 +5303,8 @@ function AdminTestAlertPage() {
                               <span>Email: {formatAdminValue(subscriber.emailDeliveryCount)}</span>
                               <span>SMS: {formatAdminValue(subscriber.smsDeliveryCount)}</span>
                               <span>Errors: {formatAdminValue(subscriber.deliveryErrorCount)}</span>
+                              <span>Replies: {formatAdminValue(subscriber.smsReplyCount)}</span>
+                              <span>Last reply: {formatAdminValue(subscriber.lastSmsReplyAt)}</span>
                             </td>
                             <td>
                               <div className="subscriber-actions">
@@ -5642,13 +5814,10 @@ function App() {
     )
   }
 
-  if (
-    window.location.pathname === '/admin/test-alert' ||
-    window.location.pathname.startsWith('/admin/test-alert/')
-  ) {
+  if (window.location.pathname.startsWith('/admin/test-alert/')) {
     const nextPath = window.location.pathname.startsWith('/admin/test-alert/subscribers')
-      ? '/admin/subscribers'
-      : '/admin'
+      ? '/admin'
+      : '/admin/test-alert'
     window.history.replaceState(null, '', `${nextPath}${window.location.search}${window.location.hash}`)
     return <AdminTestAlertPage />
   }
@@ -5664,6 +5833,7 @@ function App() {
   if (
     window.location.pathname === '/admin' ||
     window.location.pathname === '/admin/subscribers' ||
+    window.location.pathname === '/admin/test-alert' ||
     window.location.pathname === '/admin/manual' ||
     window.location.pathname === '/admin/history'
   ) {

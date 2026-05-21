@@ -34,6 +34,7 @@ export async function onRequestGet({ request, env }) {
         page: url.searchParams.get("page"),
         pageSize: url.searchParams.get("pageSize"),
         emailSearch: url.searchParams.get("emailSearch") || url.searchParams.get("search"),
+        hasSmsReplies: url.searchParams.get("hasSmsReplies") === "1",
         managementBaseUrl: getNotificationBaseUrl(env),
       });
       return jsonResponse(

@@ -1538,6 +1538,7 @@ function mapSubscriberSummary(row = {}) {
     wantsEmail: Number(row.wants_email || 0),
     wantsSms: Number(row.wants_sms || 0),
     wantsBoth: Number(row.wants_both || 0),
+    smsReplies: Number(row.sms_replies || 0),
   };
 }
 
@@ -1601,6 +1602,7 @@ function mapSubscriberSummaryFromRows(rows) {
     wantsEmail: 0,
     wantsSms: 0,
     wantsBoth: 0,
+    smsReplies: 0,
   };
 
   for (const row of rows) {
@@ -1621,6 +1623,9 @@ function mapSubscriberSummaryFromRows(rows) {
     }
     if (Number(row.wants_email || 0) === 1 && Number(row.wants_sms || 0) === 1) {
       summary.wantsBoth += 1;
+    }
+    if (Number(row.sms_reply_count || 0) > 0) {
+      summary.smsReplies += 1;
     }
   }
 
@@ -1691,6 +1696,57 @@ function mergeDeliveryStats(row, stats = {}) {
   };
 }
 
+function mergeSmsReplyStats(row, stats = {}) {
+  return {
+    ...row,
+    sms_reply_count: Number(stats.sms_reply_count || 0),
+    last_sms_reply_at: stats.last_sms_reply_at || null,
+  };
+}
+
+function buildSmsReplyExistsSql(subscriberAlias = "s") {
+  return `EXISTS (
+          SELECT 1
+          FROM notification_inbound_messages im
+          WHERE im.subscriber_id = ${subscriberAlias}.id
+             OR (${subscriberAlias}.phone_hash IS NOT NULL AND im.phone_hash = ${subscriberAlias}.phone_hash)
+        )`;
+}
+
+async function getSmsReplyStatsForSubscriberRows(env, rows) {
+  if (!rows.length) {
+    return new Map();
+  }
+
+  const statsBySubscriber = new Map();
+  const chunkSize = 90;
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const statsRows = await queryRows(
+      env,
+      `
+        SELECT
+          s.id AS subscriber_id,
+          COUNT(im.id) AS sms_reply_count,
+          MAX(im.received_at) AS last_sms_reply_at
+        FROM notification_signups s
+        LEFT JOIN notification_inbound_messages im
+          ON im.subscriber_id = s.id
+          OR (s.phone_hash IS NOT NULL AND im.phone_hash = s.phone_hash)
+        WHERE s.id IN (${placeholders})
+        GROUP BY s.id
+      `,
+      chunk.map((row) => row.id),
+    );
+
+    for (const row of statsRows) {
+      statsBySubscriber.set(row.subscriber_id, row);
+    }
+  }
+  return statsBySubscriber;
+}
+
 async function mapAdminSubscriberRow(env, row, options = {}) {
   const [email, accountEmail, phone] = await Promise.all([
     decryptString(env, row.email_cipher),
@@ -1745,6 +1801,8 @@ async function mapAdminSubscriberRow(env, row, options = {}) {
     smsDeliveryCount: Number(row.sms_delivery_count || 0),
     deliveryErrorCount: Number(row.delivery_error_count || 0),
     lastDeliveryAt: row.last_delivery_at,
+    smsReplyCount: Number(row.sms_reply_count || 0),
+    lastSmsReplyAt: row.last_sms_reply_at,
     managementUrl,
   };
 }
@@ -1817,7 +1875,12 @@ export async function getAdminSubscriberMessageHistory(env, subscriberId, option
   }
 
   const limit = clampHistoryLimit(options.limit);
-  const subscriberResult = await mapAdminSubscriberRow(env, subscriber, options);
+  const smsReplyStatsBySubscriber = await getSmsReplyStatsForSubscriberRows(env, [subscriber]);
+  const subscriberResult = await mapAdminSubscriberRow(
+    env,
+    mergeSmsReplyStats(subscriber, smsReplyStatsBySubscriber.get(subscriber.id)),
+    options,
+  );
   const emailHashes = uniqueValues([subscriber.email_hash, subscriber.account_email_hash]);
   const phoneHashes = uniqueValues([subscriber.phone_hash]);
   const outboundClauses = ["d.subscriber_id = ?"];
@@ -1895,7 +1958,7 @@ export async function getAdminSubscriberMessageHistory(env, subscriberId, option
   };
 }
 
-async function getAdminSubscriberSearchRecords(env, { page, pageSize, emailSearch, managementBaseUrl }) {
+async function getAdminSubscriberSearchRecords(env, { page, pageSize, emailSearch, hasSmsReplies, managementBaseUrl }) {
   const phoneSearchDigits = normalizePhoneSearchDigits(emailSearch);
   const subscribersQuery = `
         SELECT *
@@ -1932,8 +1995,13 @@ async function getAdminSubscriberSearchRecords(env, { page, pageSize, emailSearc
   }
 
   matchedRows.sort(compareSubscriberRows);
+  const smsReplyStatsBySubscriber = await getSmsReplyStatsForSubscriberRows(env, matchedRows);
+  const matchedRowsWithReplyStats = matchedRows.map((row) => mergeSmsReplyStats(row, smsReplyStatsBySubscriber.get(row.id)));
+  const filteredRows = hasSmsReplies
+    ? matchedRowsWithReplyStats.filter((row) => Number(row.sms_reply_count || 0) > 0)
+    : matchedRowsWithReplyStats;
   const offset = (page - 1) * pageSize;
-  const pageRows = matchedRows.slice(offset, offset + pageSize);
+  const pageRows = filteredRows.slice(offset, offset + pageSize);
   const deliveryStatsBySubscriber = new Map();
 
   if (pageRows.length) {
@@ -1967,12 +2035,13 @@ async function getAdminSubscriberSearchRecords(env, { page, pageSize, emailSearc
 
   return {
     subscribers,
-    summary: mapSubscriberSummaryFromRows(matchedRows),
-    dailyStats: mapSubscriberDailyStatsFromRows(matchedRows),
+    summary: mapSubscriberSummaryFromRows(filteredRows),
+    dailyStats: mapSubscriberDailyStatsFromRows(filteredRows),
     page,
     pageSize,
-    total: matchedRows.length,
+    total: filteredRows.length,
     emailSearch,
+    hasSmsReplies,
   };
 }
 
@@ -1981,16 +2050,19 @@ export async function getAdminSubscriberRecords(env, options = {}) {
   const pageSize = clampAdminSubscriberPageSize(options.pageSize);
   const offset = (page - 1) * pageSize;
   const emailSearch = normalizeAdminEmailSearch(options.emailSearch);
+  const hasSmsReplies = Boolean(options.hasSmsReplies);
 
   if (emailSearch) {
     return getAdminSubscriberSearchRecords(env, {
       page,
       pageSize,
       emailSearch,
+      hasSmsReplies,
       managementBaseUrl: options.managementBaseUrl,
     });
   }
 
+  const subscriberWhereClause = hasSmsReplies ? `WHERE ${buildSmsReplyExistsSql("s")}` : "";
   const summaryQuery = `
         SELECT
           COUNT(*) AS total,
@@ -2000,8 +2072,10 @@ export async function getAdminSubscriberRecords(env, options = {}) {
           SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled,
           SUM(CASE WHEN wants_email = 1 THEN 1 ELSE 0 END) AS wants_email,
           SUM(CASE WHEN wants_sms = 1 THEN 1 ELSE 0 END) AS wants_sms,
-          SUM(CASE WHEN wants_email = 1 AND wants_sms = 1 THEN 1 ELSE 0 END) AS wants_both
-        FROM notification_signups
+          SUM(CASE WHEN wants_email = 1 AND wants_sms = 1 THEN 1 ELSE 0 END) AS wants_both,
+          SUM(CASE WHEN ${buildSmsReplyExistsSql("s")} THEN 1 ELSE 0 END) AS sms_replies
+        FROM notification_signups s
+        ${subscriberWhereClause}
       `;
   const dailyStatsQuery = `
         SELECT
@@ -2026,7 +2100,8 @@ export async function getAdminSubscriberRecords(env, options = {}) {
               1,
               10
             ) AS day
-          FROM notification_signups
+          FROM notification_signups s
+          ${subscriberWhereClause}
         )
         WHERE day IS NOT NULL AND day != ''
         GROUP BY day
@@ -2039,19 +2114,32 @@ export async function getAdminSubscriberRecords(env, options = {}) {
           SUM(CASE WHEN d.channel = 'email' THEN 1 ELSE 0 END) AS email_delivery_count,
           SUM(CASE WHEN d.channel = 'sms' THEN 1 ELSE 0 END) AS sms_delivery_count,
           SUM(CASE WHEN d.status IN ('failed', 'undelivered') THEN 1 ELSE 0 END) AS delivery_error_count,
-          MAX(COALESCE(d.updated_at, d.created_at)) AS last_delivery_at
+          MAX(COALESCE(d.updated_at, d.created_at)) AS last_delivery_at,
+          (
+            SELECT COUNT(im.id)
+            FROM notification_inbound_messages im
+            WHERE im.subscriber_id = s.id
+               OR (s.phone_hash IS NOT NULL AND im.phone_hash = s.phone_hash)
+          ) AS sms_reply_count,
+          (
+            SELECT MAX(im.received_at)
+            FROM notification_inbound_messages im
+            WHERE im.subscriber_id = s.id
+               OR (s.phone_hash IS NOT NULL AND im.phone_hash = s.phone_hash)
+          ) AS last_sms_reply_at
         FROM (
-          SELECT *
-          FROM notification_signups
+          SELECT s.*
+          FROM notification_signups s
+          ${subscriberWhereClause}
           ORDER BY
-            CASE status
+            CASE s.status
               WHEN 'active' THEN 0
               WHEN 'pending_checkout' THEN 1
               WHEN 'past_due' THEN 2
               ELSE 3
             END,
-            updated_at DESC,
-            id ASC
+            s.updated_at DESC,
+            s.id ASC
           LIMIT ? OFFSET ?
         ) s
         LEFT JOIN notification_deliveries d ON d.subscriber_id = s.id
@@ -2082,6 +2170,7 @@ export async function getAdminSubscriberRecords(env, options = {}) {
     page,
     pageSize,
     total: summary.total,
+    hasSmsReplies,
   };
 }
 

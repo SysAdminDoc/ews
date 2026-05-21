@@ -868,6 +868,19 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   color: #000000;
 }
 
+.signup-field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 92px;
+  padding: 8px;
+  border: 1px solid #999999;
+  border-radius: 0;
+  background: #ffffff;
+  color: #000000;
+  font: inherit;
+  resize: vertical;
+}
+
 .signup-field input[aria-invalid="true"] {
   border-color: #990000;
 }
@@ -879,6 +892,7 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
 }
 
 .signup-field input:focus-visible,
+.signup-field textarea:focus-visible,
 .signup-consent input:focus-visible,
 .signup-submit:focus-visible {
   outline: 1px dotted #000000;
@@ -1031,6 +1045,12 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
 .subscriber-search-clear:disabled {
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+.subscriber-filter-toggle {
+  min-height: 36px;
+  align-items: center;
+  padding: 6px 0;
 }
 
 .subscriber-search-note {
@@ -1336,6 +1356,111 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
 .history-contact-summary span,
 .history-contact-summary a {
   display: block;
+}
+
+.sms-conversation {
+  display: grid;
+  gap: 10px;
+  min-height: 280px;
+  max-height: min(68vh, 720px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid #cccccc;
+  background: #f5f5f7;
+}
+
+.sms-message-row {
+  display: grid;
+  gap: 4px;
+  max-width: min(76%, 620px);
+}
+
+.sms-message-inbound {
+  justify-self: start;
+}
+
+.sms-message-outbound {
+  justify-self: end;
+  justify-items: end;
+}
+
+.sms-bubble {
+  display: grid;
+  gap: 4px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sms-bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.sms-message-inbound .sms-bubble {
+  border-radius: 16px 16px 16px 4px;
+  border-color: #d4d4d4;
+  background: #e5e5ea;
+  color: #000000;
+}
+
+.sms-message-outbound .sms-bubble {
+  border-radius: 16px 16px 4px 16px;
+  border-color: #006bd6;
+  background: #007aff;
+  color: #ffffff;
+}
+
+.sms-empty-text {
+  color: inherit;
+  opacity: 0.72;
+}
+
+.sms-message-action,
+.sms-bubble em {
+  display: block;
+  font-size: 12px;
+}
+
+.sms-bubble em {
+  font-style: normal;
+  color: inherit;
+  opacity: 0.86;
+}
+
+.sms-delivery-status {
+  padding: 0 4px;
+  color: #555555;
+  font-size: 12px;
+}
+
+.sms-delivery-status-error {
+  color: #990000;
+}
+
+.sms-reply-form {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.sms-reply-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sms-reply-count {
+  color: #555555;
+  font-size: 12px;
+}
+
+.sms-reply-count-error {
+  color: #990000;
+  font-weight: 700;
 }
 
 .message-history-table-wrap {
@@ -1959,6 +2084,15 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   .messaging-status-grid,
   .map-hover-grid {
     grid-template-columns: 1fr;
+  }
+
+  .sms-conversation {
+    max-height: 64vh;
+    padding: 10px;
+  }
+
+  .sms-message-row {
+    max-width: 88%;
   }
 
   .model-list li {
