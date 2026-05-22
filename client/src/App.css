@@ -1358,6 +1358,39 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   display: block;
 }
 
+.history-contact-summary .history-alert-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.history-alert-indicator {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-alert-indicator svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.history-alert-enabled {
+  color: #137333;
+}
+
+.history-alert-disabled {
+  color: #b3261e;
+}
+
 .sms-history-card {
   display: grid;
   border: 1px solid #dadce0;

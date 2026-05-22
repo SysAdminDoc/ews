@@ -3647,6 +3647,27 @@ function MessageStatusBadge({ message, className = '' }) {
   )
 }
 
+function AlertEnabledIcon({ enabled, label }) {
+  return (
+    <span
+      className={`history-alert-indicator ${enabled ? 'history-alert-enabled' : 'history-alert-disabled'}`}
+      title={`${label} ${enabled ? 'enabled' : 'disabled'}`}
+      aria-label={`${label} ${enabled ? 'enabled' : 'disabled'}`}
+    >
+      {enabled ? (
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M3.4 8.2 6.6 11.4 12.8 4.8" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M4.8 4.8 11.2 11.2" />
+          <path d="M11.2 4.8 4.8 11.2" />
+        </svg>
+      )}
+    </span>
+  )
+}
+
 function formatMessageCarrierInfo(message) {
   const carrier = String(message?.carrier || '').trim()
   const lineType = String(message?.lineType || '').trim()
@@ -5067,9 +5088,15 @@ function AdminTestAlertPage() {
                 <div className="history-contact-summary" aria-label="Subscriber contact summary">
                   <strong>{formatAdminValue(messageHistory.subscriber.accountEmail || messageHistory.subscriber.email || messageHistory.subscriber.phone)}</strong>
                   <span>Subscriber: {messageHistory.subscriber.id}</span>
-                  <span>Alert email: {formatAdminValue(messageHistory.subscriber.email)}</span>
                   <span>Account email: {formatAdminValue(messageHistory.subscriber.accountEmail)}</span>
-                  <span>Phone: {formatAdminValue(messageHistory.subscriber.phone)}</span>
+                  <span className="history-alert-row">
+                    <AlertEnabledIcon enabled={Boolean(messageHistory.subscriber.wantsEmail)} label="Alert email" />
+                    <span>Alert email: {formatAdminValue(messageHistory.subscriber.email)}</span>
+                  </span>
+                  <span className="history-alert-row">
+                    <AlertEnabledIcon enabled={Boolean(messageHistory.subscriber.wantsSms)} label="Phone alerts" />
+                    <span>Phone: {formatAdminValue(messageHistory.subscriber.phone)}</span>
+                  </span>
                   <span>Status: {formatAdminValue(messageHistory.subscriber.status)}</span>
                   <span>SMS replies: {formatAdminValue(messageHistory.subscriber.smsReplyCount)}</span>
                   <span>Last SMS reply: {formatAdminValue(messageHistory.subscriber.lastSmsReplyAt)}</span>
