@@ -1,6 +1,6 @@
 import { getAdminSubscriberMessageHistory } from "../../_lib/db.js";
 import { handleError, HttpError, jsonResponse, readJsonRequest } from "../../_lib/http.js";
-import { sendAdminSubscriberSmsReply } from "../../_lib/notifications.js";
+import { sendAdminSubscriberEmailReply, sendAdminSubscriberSmsReply } from "../../_lib/notifications.js";
 
 function getNotificationBaseUrl(env) {
   return String(env.EWS_NOTIFICATION_URL || env.APP_BASE_URL || "https://aews.cc/")
@@ -44,10 +44,23 @@ export async function onRequestPost({ request, env }) {
       throw new HttpError(400, "Enter a subscriber ID.");
     }
 
-    const result = await sendAdminSubscriberSmsReply(env, subscriberId, payload.message || payload.text);
+    const action = String(payload.action || "send_sms_reply").trim();
+    let result = null;
+    if (action === "send_sms_reply") {
+      result = await sendAdminSubscriberSmsReply(env, subscriberId, payload.message || payload.text);
+    } else if (action === "send_email_reply") {
+      result = await sendAdminSubscriberEmailReply(env, subscriberId, {
+        subject: payload.subject,
+        body: payload.body || payload.message || payload.text,
+      });
+    } else {
+      throw new HttpError(400, "Unknown subscriber history action.");
+    }
+
     return jsonResponse(
       {
         ok: true,
+        action,
         ...result,
       },
       {

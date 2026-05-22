@@ -32,6 +32,8 @@ const DEFAULT_RENEWAL_REMINDER_CONCURRENCY = 4;
 const RENEWAL_REMINDER_KIND = "renewal_reminder";
 const RENEWAL_REMINDER_SOURCE = "scheduled_renewal_reminder";
 const RENEWAL_REMINDER_SUBJECT_PREFIX = "Your Apocalypse EWS subscription renews on";
+const ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH = 10000;
+const ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH = 200;
 export const SIGNUP_CONFIRMATION_SMS_TEXT =
   "Apocalypse Early Warning System: subscription confirmed. We will only text if emergency level reaches 5. Reply STOP to stop. Msg&data rates may apply.";
 const HOPEFULLY_MESSAGE = "Hopefully we will not need to send you a message.";
@@ -1169,6 +1171,25 @@ function normalizeAdminReplyText(value) {
   return text;
 }
 
+function normalizeAdminEmailReply(payload = {}) {
+  const subject = String(payload.subject || "").trim();
+  const body = String(payload.body || payload.message || payload.text || "").trim();
+  if (!subject) {
+    throw new HttpError(400, "Enter an email subject.");
+  }
+  if (!body) {
+    throw new HttpError(400, "Enter an email body.");
+  }
+  if (subject.length > ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH) {
+    throw new HttpError(400, `Email subjects must be ${ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH} characters or fewer.`);
+  }
+  if (body.length > ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH) {
+    throw new HttpError(400, `Email replies must be ${ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH} characters or fewer.`);
+  }
+
+  return { subject, body };
+}
+
 export async function sendAdminSubscriberSmsReply(env, subscriberId, text) {
   const subscriber = await getSubscriberById(env, subscriberId);
   if (!subscriber) {
@@ -1243,5 +1264,77 @@ export async function sendAdminSubscriberSmsReply(env, subscriberId, text) {
       errorCount: 1,
     });
     throw error instanceof HttpError ? error : new HttpError(502, error.message || "Could not send text reply.");
+  }
+}
+
+export async function sendAdminSubscriberEmailReply(env, subscriberId, payload = {}) {
+  const subscriber = await getSubscriberById(env, subscriberId);
+  if (!subscriber) {
+    throw new HttpError(404, "Subscriber not found.");
+  }
+
+  const hydrated = await hydrateSubscriberContacts(env, subscriber);
+  const destination = hydrated.email || hydrated.accountEmail;
+  if (!destination) {
+    throw new HttpError(400, "Subscriber does not have an email address.");
+  }
+
+  const { subject, body } = normalizeAdminEmailReply(payload);
+  const alertId = await createAlertRecord(env, {
+    kind: "admin_email_reply",
+    source: "admin",
+    level: null,
+    slotKey: null,
+    messageText: subject,
+  });
+  const destinationHash = await contactHash(env, "email", destination);
+
+  try {
+    const result = await sendEmail(env, { to: destination, subject, text: body });
+    await recordDelivery(env, {
+      alertId,
+      subscriberId: hydrated.id,
+      channel: "email",
+      destinationHash,
+      status: "sent",
+      providerMessageId: result.id,
+      messageText: body,
+      subject,
+    });
+    await updateAlertRecord(env, alertId, {
+      status: "sent",
+      subscriberCount: 1,
+      emailSentCount: 1,
+      smsSentCount: 0,
+      errorCount: 0,
+    });
+
+    return {
+      alertId,
+      subscriberId: hydrated.id,
+      email: destination,
+      providerMessageId: result.id,
+      subject,
+      status: "sent",
+    };
+  } catch (error) {
+    await recordDelivery(env, {
+      alertId,
+      subscriberId: hydrated.id,
+      channel: "email",
+      destinationHash,
+      status: "failed",
+      error: error.message,
+      messageText: body,
+      subject,
+    });
+    await updateAlertRecord(env, alertId, {
+      status: "completed_with_errors",
+      subscriberCount: 1,
+      emailSentCount: 0,
+      smsSentCount: 0,
+      errorCount: 1,
+    });
+    throw error instanceof HttpError ? error : new HttpError(502, error.message || "Could not send email reply.");
   }
 }

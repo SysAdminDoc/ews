@@ -1505,6 +1505,10 @@ html.emergency-color-scheme .map-control-button:hover:not(:disabled) {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.email-reply-form {
+  background: #ffffff;
+}
+
 .sms-reply-actions {
   display: flex;
   align-items: center;

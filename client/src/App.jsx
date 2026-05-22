@@ -45,6 +45,8 @@ const SUBSCRIBERS_PER_PAGE = 20
 const SUBSCRIPTION_GROSS_DOLLARS = 5
 const MESSAGE_HISTORY_POLL_INTERVAL_MS = 15_000
 const ADMIN_REPLY_MAX_LENGTH = 1600
+const ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH = 200
+const ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH = 10000
 const PHONE_VALIDATION_MESSAGE = 'Enter a valid phone number. Use 10 digits for US/Canada, or + and country code for international numbers.'
 const NON_US_CANADA_PHONE_WARNING = 'We do not currently support non-US/Canada phone numbers, continue anyway?'
 const SUPPORTED_SMS_COUNTRY_CODES = new Set(['US', 'CA'])
@@ -4551,6 +4553,10 @@ function AdminTestAlertPage() {
   const [replyText, setReplyText] = useState('')
   const [replySubmitting, setReplySubmitting] = useState(false)
   const [replyStatus, setReplyStatus] = useState(null)
+  const [emailReplySubject, setEmailReplySubject] = useState('')
+  const [emailReplyBody, setEmailReplyBody] = useState('')
+  const [emailReplySubmitting, setEmailReplySubmitting] = useState(false)
+  const [emailReplyStatus, setEmailReplyStatus] = useState(null)
   const [expandedEmailId, setExpandedEmailId] = useState(null)
   const subscriberPageCount = Math.max(1, Math.ceil(subscriberTotal / Math.max(1, subscriberPageSize)))
   const normalizedSubscriberPage = clamp(subscriberPage, 1, subscriberPageCount)
@@ -4674,6 +4680,9 @@ function AdminTestAlertPage() {
   useEffect(() => {
     setReplyText('')
     setReplyStatus(null)
+    setEmailReplySubject('')
+    setEmailReplyBody('')
+    setEmailReplyStatus(null)
     setExpandedEmailId(null)
   }, [historySubscriberId])
 
@@ -4882,6 +4891,7 @@ function AdminTestAlertPage() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          action: 'send_sms_reply',
           subscriber: subscriberId,
           message,
         }),
@@ -4904,11 +4914,79 @@ function AdminTestAlertPage() {
     }
   }
 
+  async function handleEmailReplySubmit(event) {
+    event.preventDefault()
+
+    const subscriberId = String(historySubscriberId || '').trim()
+    const subject = emailReplySubject.trim()
+    const body = emailReplyBody.trim()
+    if (!subscriberId) {
+      setEmailReplyStatus({ tone: 'error', message: 'Missing subscriber ID.' })
+      return
+    }
+    if (!subject) {
+      setEmailReplyStatus({ tone: 'error', message: 'Enter an email subject.' })
+      return
+    }
+    if (!body) {
+      setEmailReplyStatus({ tone: 'error', message: 'Enter an email body.' })
+      return
+    }
+    if (subject.length > ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH) {
+      setEmailReplyStatus({ tone: 'error', message: `Email subjects must be ${ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH} characters or fewer.` })
+      return
+    }
+    if (body.length > ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH) {
+      setEmailReplyStatus({ tone: 'error', message: `Email replies must be ${ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH} characters or fewer.` })
+      return
+    }
+
+    setEmailReplySubmitting(true)
+    setEmailReplyStatus({ tone: 'success', message: 'Sending email reply...' })
+    try {
+      const response = await fetch('/api/admin/subscriber-history', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'send_email_reply',
+          subscriber: subscriberId,
+          subject,
+          body,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Could not send email reply.')
+      }
+
+      setEmailReplySubject('')
+      setEmailReplyBody('')
+      setEmailReplyStatus({
+        tone: 'success',
+        message: `Email reply sent${payload.providerMessageId ? `: ${payload.providerMessageId}` : '.'}`,
+      })
+      await loadMessageHistory()
+    } catch (error) {
+      setEmailReplyStatus({ tone: 'error', message: error.message })
+    } finally {
+      setEmailReplySubmitting(false)
+    }
+  }
+
   const smsConversationMessages = getSmsConversationMessages(messageHistory?.messages)
   const emailHistoryMessages = getEmailHistoryMessages(messageHistory?.messages)
   const canTextReply = Boolean(messageHistory?.subscriber?.phone)
+  const canEmailReply = Boolean(messageHistory?.subscriber?.email || messageHistory?.subscriber?.accountEmail)
   const replyCharactersRemaining = ADMIN_REPLY_MAX_LENGTH - replyText.length
   const replyDisabled = replySubmitting || !canTextReply || !replyText.trim() || replyText.length > ADMIN_REPLY_MAX_LENGTH
+  const emailReplyBodyCharactersRemaining = ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH - emailReplyBody.length
+  const emailReplyDisabled =
+    emailReplySubmitting ||
+    !canEmailReply ||
+    !emailReplySubject.trim() ||
+    !emailReplyBody.trim() ||
+    emailReplySubject.length > ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH ||
+    emailReplyBody.length > ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH
   const toggleExpandedEmail = (messageId) => {
     setExpandedEmailId((current) => (current === messageId ? null : messageId))
   }
@@ -5233,6 +5311,46 @@ function AdminTestAlertPage() {
                   ) : (
                     <p className="empty-state">No sent email history found for this subscriber.</p>
                   )}
+                  {messageHistory.subscriber ? (
+                    <form className="sms-reply-form email-reply-form" onSubmit={handleEmailReplySubmit}>
+                      <label className="signup-field">
+                        <span>Subject</span>
+                        <input
+                          type="text"
+                          value={emailReplySubject}
+                          maxLength={ADMIN_EMAIL_REPLY_SUBJECT_MAX_LENGTH}
+                          disabled={emailReplySubmitting || !canEmailReply}
+                          onChange={(event) => setEmailReplySubject(event.target.value)}
+                        />
+                      </label>
+                      <label className="signup-field">
+                        <span>Body</span>
+                        <textarea
+                          value={emailReplyBody}
+                          maxLength={ADMIN_EMAIL_REPLY_BODY_MAX_LENGTH}
+                          rows={5}
+                          disabled={emailReplySubmitting || !canEmailReply}
+                          onChange={(event) => setEmailReplyBody(event.target.value)}
+                        />
+                      </label>
+                      <div className="sms-reply-actions">
+                        <button className="signup-submit" type="submit" disabled={emailReplyDisabled}>
+                          {emailReplySubmitting ? 'Sending...' : 'Send Email Reply'}
+                        </button>
+                        <span className={emailReplyBodyCharactersRemaining < 0 ? 'sms-reply-count sms-reply-count-error' : 'sms-reply-count'}>
+                          {emailReplyBodyCharactersRemaining}
+                        </span>
+                      </div>
+                      {!canEmailReply ? (
+                        <p className="signup-status signup-status-error">This subscriber does not have an email address.</p>
+                      ) : null}
+                      {emailReplyStatus ? (
+                        <p className={`signup-status signup-status-${emailReplyStatus.tone}`} role="status">
+                          {emailReplyStatus.message}
+                        </p>
+                      ) : null}
+                    </form>
+                  ) : null}
                 </section>
               ) : null}
             </section>
