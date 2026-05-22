@@ -616,7 +616,7 @@ export async function getSubscriberById(env, subscriberId) {
 }
 
 export async function createManualSubscriber(env, payload = {}, requestContext = {}) {
-  const accountEmail = normalizeEmail(payload.accountEmail || payload.email);
+  const accountEmail = normalizeEmail(payload.accountEmail);
   const wantsEmail = Boolean(payload.wantsEmail);
   const email = wantsEmail ? normalizeEmail(payload.email || accountEmail) : null;
   const phone = normalizePhone(payload.phone);

@@ -5249,9 +5249,11 @@ function AdminTestAlertPage() {
                   <span>Account email</span>
                   <input
                     type="email"
+                    name="accountEmail"
                     value={manualAccountEmail}
                     autoComplete="email"
                     placeholder="you@example.com"
+                    required
                     onChange={(event) => setManualAccountEmail(event.target.value)}
                   />
                 </label>
