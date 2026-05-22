@@ -243,6 +243,10 @@ async function buildInsert(env, record) {
     source: "telnyx_detail_records",
     messageType: message?.type || record.message_type || null,
     profileId: message?.messaging_profile_id || record.profile_id || null,
+    fromCarrier: message?.from?.carrier || null,
+    fromLineType: message?.from?.line_type || null,
+    toCarrier: message?.to?.[0]?.carrier || null,
+    toLineType: message?.to?.[0]?.line_type || null,
     retrieveError: message?.retrieveError || null,
     textStored: Boolean(text),
   };

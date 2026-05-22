@@ -112,10 +112,32 @@ export async function sendTelnyxMessage(env, { to, text, useStatusWebhook = true
   }
 
   const payload = await telnyxRequest(env, "POST", "/messages", body);
+  const recipientInfo = getTelnyxRecipientCarrierInfo(payload.data);
   return {
     id: payload.data?.id || null,
     cost: payload.data?.cost || null,
     providerStatus: payload.data?.to?.[0]?.status || payload.data?.status || null,
+    carrier: recipientInfo.carrier,
+    lineType: recipientInfo.lineType,
+  };
+}
+
+function normalizeTelnyxInfoValue(value) {
+  return String(value || "").trim() || null;
+}
+
+export function getTelnyxRecipientCarrierInfo(payload = {}) {
+  const recipient = Array.isArray(payload.to) ? payload.to[0] : null;
+  return {
+    carrier: normalizeTelnyxInfoValue(recipient?.carrier),
+    lineType: normalizeTelnyxInfoValue(recipient?.line_type),
+  };
+}
+
+export function getTelnyxSenderCarrierInfo(payload = {}) {
+  return {
+    carrier: normalizeTelnyxInfoValue(payload.from?.carrier),
+    lineType: normalizeTelnyxInfoValue(payload.from?.line_type),
   };
 }
 

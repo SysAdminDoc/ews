@@ -1324,13 +1324,15 @@ export async function recordDelivery(env, delivery) {
           status,
           provider_message_id,
           provider_status,
+          carrier,
+          line_type,
           error,
           message_text_cipher,
           subject,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     )
     .bind(
@@ -1342,6 +1344,8 @@ export async function recordDelivery(env, delivery) {
       delivery.status,
       delivery.providerMessageId || null,
       delivery.providerStatus || null,
+      delivery.carrier ? String(delivery.carrier).slice(0, 500) : null,
+      delivery.lineType ? String(delivery.lineType).slice(0, 100) : null,
       delivery.error ? String(delivery.error).slice(0, 1000) : null,
       messageTextCipher,
       delivery.subject ? String(delivery.subject).slice(0, 500) : null,
@@ -1499,6 +1503,8 @@ export async function getRecentAlertDeliveries(env, limit = 25) {
           d.status AS delivery_status,
           d.provider_message_id,
           d.provider_status,
+          d.carrier,
+          d.line_type,
           d.error,
           d.created_at AS delivery_created_at,
           d.updated_at AS delivery_updated_at
@@ -1830,6 +1836,8 @@ async function mapOutboundHistoryRow(env, row) {
     source: row.source,
     status: row.delivery_status,
     providerStatus: row.provider_status,
+    carrier: row.carrier,
+    lineType: row.line_type,
     subject: row.subject,
     messageText,
     providerMessageId: row.provider_message_id,
@@ -1841,12 +1849,24 @@ async function mapOutboundHistoryRow(env, row) {
   };
 }
 
+function parseInboundMetadata(row) {
+  if (!row.metadata_json) {
+    return {};
+  }
+  try {
+    return JSON.parse(row.metadata_json) || {};
+  } catch {
+    return {};
+  }
+}
+
 async function mapInboundHistoryRow(env, row) {
   const [fromPhone, toPhone, messageText] = await Promise.all([
     decryptString(env, row.from_phone_cipher),
     decryptString(env, row.to_phone_cipher),
     decryptString(env, row.message_text_cipher),
   ]);
+  const metadata = parseInboundMetadata(row);
 
   return {
     id: row.id,
@@ -1856,6 +1876,8 @@ async function mapInboundHistoryRow(env, row) {
     source: row.provider,
     status: row.status,
     action: row.action,
+    carrier: metadata.fromCarrier || metadata.carrier || null,
+    lineType: metadata.fromLineType || metadata.lineType || null,
     fromPhone,
     toPhone,
     messageText,
@@ -1906,6 +1928,8 @@ export async function getAdminSubscriberMessageHistory(env, subscriberId, option
           d.status AS delivery_status,
           d.provider_message_id,
           d.provider_status,
+          d.carrier,
+          d.line_type,
           d.error,
           d.message_text_cipher,
           d.subject,
@@ -2194,7 +2218,11 @@ export async function getSubscriberForCustomerPortal(env, subscriberId) {
     .first();
 }
 
-export async function updateDeliveryByProviderMessageId(env, providerMessageId, { status, providerStatus = null, error = null }) {
+export async function updateDeliveryByProviderMessageId(
+  env,
+  providerMessageId,
+  { status, providerStatus = null, error = null, carrier = null, lineType = null },
+) {
   if (!providerMessageId) {
     return null;
   }
@@ -2228,12 +2256,22 @@ export async function updateDeliveryByProviderMessageId(env, providerMessageId, 
         SET
           status = ?,
           provider_status = ?,
+          carrier = COALESCE(?, carrier),
+          line_type = COALESCE(?, line_type),
           error = ?,
           updated_at = ?
         WHERE id = ?
       `,
     )
-    .bind(status, providerStatus, error ? String(error).slice(0, 1000) : null, nowIso(), existing.id)
+    .bind(
+      status,
+      providerStatus,
+      carrier ? String(carrier).slice(0, 500) : null,
+      lineType ? String(lineType).slice(0, 100) : null,
+      error ? String(error).slice(0, 1000) : null,
+      nowIso(),
+      existing.id,
+    )
     .run();
 
   await recalculateAlertDeliveryCounts(env, existing.alert_id);

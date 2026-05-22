@@ -3519,6 +3519,25 @@ function formatMessageHistoryTime(value) {
   return date.toLocaleString()
 }
 
+function formatMessageHistoryMinuteTime(value) {
+  if (!value) {
+    return 'No timestamp'
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
 function getMessageHistoryTimestamp(message) {
   const timestamp = Date.parse(message?.occurredAt || message?.updatedAt || message?.createdAt || '')
   return Number.isFinite(timestamp) ? timestamp : 0
@@ -3575,6 +3594,63 @@ function formatMessageDeliveryStatus(message) {
 
 function isMessageDeliveryError(message) {
   return Boolean(message?.error || ['failed', 'undelivered'].includes(String(message?.status || '').toLowerCase()))
+}
+
+function getMessageDeliveryTone(message) {
+  const status = String(message?.status || message?.providerStatus || '').toLowerCase()
+  if (isMessageDeliveryError(message)) {
+    return 'error'
+  }
+  if (['delivered', 'received'].includes(status)) {
+    return 'success'
+  }
+  if (['queued', 'sending', 'sent', 'unconfirmed', 'delivery_unconfirmed'].includes(status)) {
+    return 'pending'
+  }
+  return 'neutral'
+}
+
+function MessageStatusIcon({ tone }) {
+  if (tone === 'error') {
+    return (
+      <svg className="message-status-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <circle cx="8" cy="8" r="6.5" />
+        <path d="M8 4.5v4" />
+        <path d="M8 11.5h.01" />
+      </svg>
+    )
+  }
+  if (tone === 'pending') {
+    return (
+      <svg className="message-status-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <circle cx="8" cy="8" r="6.5" />
+        <path d="M8 4.5V8l2.4 1.5" />
+      </svg>
+    )
+  }
+  return (
+    <svg className="message-status-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="6.5" />
+      <path d="M4.8 8.1 7 10.3l4.2-4.6" />
+    </svg>
+  )
+}
+
+function MessageStatusBadge({ message, className = '' }) {
+  const tone = getMessageDeliveryTone(message)
+  const label = formatMessageDeliveryStatus(message)
+  return (
+    <span className={`${className} message-status-badge message-status-${tone}`.trim()} title={label}>
+      <MessageStatusIcon tone={tone} />
+      <span>{label}</span>
+    </span>
+  )
+}
+
+function formatMessageCarrierInfo(message) {
+  const carrier = String(message?.carrier || '').trim()
+  const lineType = String(message?.lineType || '').trim()
+  return [carrier, lineType].filter(Boolean).join(' · ')
 }
 
 function formatEmailSubject(message) {
@@ -5013,7 +5089,8 @@ function AdminTestAlertPage() {
                     <div className="sms-conversation" aria-label="SMS conversation">
                       {smsConversationMessages.map((message) => {
                         const isOutbound = message.direction === 'outbound'
-                        const deliveryStatus = formatMessageDeliveryStatus(message)
+                        const carrierInfo = formatMessageCarrierInfo(message)
+                        const smsTimestamp = formatMessageHistoryMinuteTime(message.occurredAt)
                         return (
                           <article
                             className={`sms-message-row ${isOutbound ? 'sms-message-outbound' : 'sms-message-inbound'}`}
@@ -5032,11 +5109,11 @@ function AdminTestAlertPage() {
                               ) : null}
                               {message.error ? <em>{message.error}</em> : null}
                             </div>
-                            {isOutbound ? (
-                              <span className={`sms-delivery-status ${isMessageDeliveryError(message) ? 'sms-delivery-status-error' : ''}`}>
-                                {deliveryStatus}
-                              </span>
-                            ) : null}
+                            <div className="sms-message-meta">
+                              <time dateTime={message.occurredAt || undefined}>{smsTimestamp}</time>
+                              <MessageStatusBadge message={message} className="sms-delivery-status" />
+                              {carrierInfo ? <span className="sms-carrier-info">Carrier: {carrierInfo}</span> : null}
+                            </div>
                           </article>
                         )
                       })}
@@ -5114,9 +5191,7 @@ function AdminTestAlertPage() {
                               </div>
                               <div className="gmail-message-meta">
                                 <time dateTime={message.occurredAt || undefined}>{formatMessageHistoryTime(message.occurredAt)}</time>
-                                <span className={isMessageDeliveryError(message) ? 'gmail-status gmail-status-error' : 'gmail-status'}>
-                                  {formatMessageDeliveryStatus(message)}
-                                </span>
+                                <MessageStatusBadge message={message} className="gmail-status" />
                               </div>
                             </button>
                             {isExpanded ? (

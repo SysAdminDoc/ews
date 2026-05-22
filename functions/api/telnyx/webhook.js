@@ -13,6 +13,8 @@ import {
   classifyInboundSms,
   getTelnyxProviderMessageStatus,
   getTelnyxDeliveryError,
+  getTelnyxRecipientCarrierInfo,
+  getTelnyxSenderCarrierInfo,
   hasTelnyxWebhookVerificationKey,
   normalizeTelnyxMessageStatus,
   telnyxWebhookResponse,
@@ -38,6 +40,8 @@ async function handleInboundMessage(env, event, payload) {
   }
 
   const action = classifyInboundSms(payload.text);
+  const senderInfo = getTelnyxSenderCarrierInfo(payload);
+  const recipientInfo = getTelnyxRecipientCarrierInfo(payload);
   const inboundMessage = await recordInboundSmsMessage(env, {
     provider: "telnyx",
     providerMessageId: payload.id,
@@ -53,6 +57,10 @@ async function handleInboundMessage(env, event, payload) {
       messageType: payload.type || null,
       mediaCount: Array.isArray(payload.media) ? payload.media.length : 0,
       messagingProfileId: payload.messaging_profile_id || null,
+      fromCarrier: senderInfo.carrier,
+      fromLineType: senderInfo.lineType,
+      toCarrier: recipientInfo.carrier,
+      toLineType: recipientInfo.lineType,
     },
   });
   let updatedCount = 0;
@@ -96,10 +104,13 @@ async function handleOutboundStatus(env, eventType, payload) {
   const providerStatus = getTelnyxProviderMessageStatus(payload);
   const status = normalizeTelnyxMessageStatus(eventType, payload);
   const error = getTelnyxDeliveryError(payload);
+  const recipientInfo = getTelnyxRecipientCarrierInfo(payload);
   const deliveryUpdate = await updateDeliveryByProviderMessageId(env, messageId, {
     status,
     providerStatus,
     error,
+    carrier: recipientInfo.carrier,
+    lineType: recipientInfo.lineType,
   });
 
   return {

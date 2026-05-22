@@ -278,6 +278,8 @@ async function sendDelivery(env, { alertId, subscriberId, channel, destination, 
       status: "sent",
       providerMessageId: result.id,
       providerStatus: result.providerStatus || null,
+      carrier: result.carrier || null,
+      lineType: result.lineType || null,
       messageText: text,
       subject,
     });
@@ -1201,6 +1203,8 @@ export async function sendAdminSubscriberSmsReply(env, subscriberId, text) {
       status: "sent",
       providerMessageId: result.id,
       providerStatus: result.providerStatus || null,
+      carrier: result.carrier || null,
+      lineType: result.lineType || null,
       messageText,
     });
     await updateAlertRecord(env, alertId, {
@@ -1217,6 +1221,8 @@ export async function sendAdminSubscriberSmsReply(env, subscriberId, text) {
       phone: hydrated.phone,
       providerMessageId: result.id,
       providerStatus: result.providerStatus || null,
+      carrier: result.carrier || null,
+      lineType: result.lineType || null,
       status: "sent",
     };
   } catch (error) {
