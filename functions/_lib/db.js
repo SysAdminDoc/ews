@@ -167,6 +167,14 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
   const createdAt = existing?.created_at || nowIso();
   const timestamp = nowIso();
   const smsConsentAt = contacts.phone && contacts.smsConsent ? timestamp : null;
+  const previousCheckoutSessionId =
+    existing?.status === SUBSCRIBER_STATUS.PENDING ? existing.stripe_checkout_session_id || null : null;
+  const preserveExistingCheckout = Boolean(previousCheckoutSessionId);
+  const canReusePreviousCheckout =
+    preserveExistingCheckout &&
+    (contacts.email
+      ? existing.email_hash === emailHash || existing.account_email_hash === emailHash
+      : !existing.email_hash && !existing.account_email_hash);
 
   if (existing) {
     await db
@@ -189,9 +197,9 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
             sms_consent_at = ?,
             sms_consent_ip_hash = ?,
             sms_consent_user_agent_hash = ?,
-            stripe_checkout_session_id = NULL,
-            checkout_url = NULL,
-            checkout_created_at = NULL,
+            stripe_checkout_session_id = CASE WHEN ? = 1 THEN stripe_checkout_session_id ELSE NULL END,
+            checkout_url = CASE WHEN ? = 1 THEN checkout_url ELSE NULL END,
+            checkout_created_at = CASE WHEN ? = 1 THEN checkout_created_at ELSE NULL END,
             checkout_completed_at = NULL,
             canceled_at = NULL,
             sms_opted_out_at = NULL,
@@ -219,6 +227,9 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
         smsConsentAt,
         consentIpHash,
         consentUserAgentHash,
+        preserveExistingCheckout ? 1 : 0,
+        preserveExistingCheckout ? 1 : 0,
+        preserveExistingCheckout ? 1 : 0,
         timestamp,
         id,
       )
@@ -277,6 +288,8 @@ export async function createPendingSignup(env, contacts, requestContext = {}) {
     id,
     email: contacts.email,
     phone: contacts.phone,
+    previousCheckoutSessionId,
+    canReusePreviousCheckout,
   };
 }
 
@@ -378,6 +391,9 @@ export async function activateSubscriberFromCheckout(env, checkoutSession) {
         .first();
 
   if (!subscriber) {
+    return null;
+  }
+  if (sessionId && subscriber.stripe_checkout_session_id && subscriber.stripe_checkout_session_id !== sessionId) {
     return null;
   }
 
@@ -1570,6 +1586,15 @@ function normalizePhoneSearchDigits(value) {
   return String(value || "").replace(/\D+/g, "");
 }
 
+function normalizeAdminPhoneSearchDigits(value) {
+  const searchText = String(value || "").trim();
+  if (!/^[+\d\s().-]+$/.test(searchText)) {
+    return "";
+  }
+
+  return normalizePhoneSearchDigits(searchText);
+}
+
 function subscriberStatusRank(status) {
   if (status === SUBSCRIBER_STATUS.ACTIVE) {
     return 0;
@@ -2026,7 +2051,7 @@ export async function getAdminSubscriberMessageHistory(env, subscriberId, option
 }
 
 async function getAdminSubscriberSearchRecords(env, { page, pageSize, emailSearch, hasSmsReplies, managementBaseUrl }) {
-  const phoneSearchDigits = normalizePhoneSearchDigits(emailSearch);
+  const phoneSearchDigits = normalizeAdminPhoneSearchDigits(emailSearch);
   const subscribersQuery = `
         SELECT *
         FROM notification_signups

@@ -107,6 +107,57 @@ export async function createCheckoutSession(env, { signupId, email, priceId, bas
   ]);
 }
 
+export async function retrieveCheckoutSession(env, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  return stripeRequest(env, "GET", `/checkout/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function getOpenCheckoutSession(env, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  let session;
+  try {
+    session = await retrieveCheckoutSession(env, sessionId);
+  } catch (error) {
+    if (error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+
+  if (session?.status === "complete") {
+    throw new HttpError(409, "The previous checkout was already completed. Wait a moment, then refresh this page.");
+  }
+
+  return session?.status === "open" ? session : null;
+}
+
+export async function expireCheckoutSession(env, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  return stripeRequest(env, "POST", `/checkout/sessions/${encodeURIComponent(sessionId)}/expire`);
+}
+
+export async function expireOpenCheckoutSession(env, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  const session = await getOpenCheckoutSession(env, sessionId);
+  if (session) {
+    return expireCheckoutSession(env, sessionId);
+  }
+
+  return null;
+}
+
 export async function createBillingPortalSession(env, { customerId, returnUrl }) {
   if (!customerId) {
     throw new HttpError(400, "Missing Stripe customer ID for billing portal session.");
