@@ -15,3 +15,7 @@ config/opensky.credentials.json
 .DS_Store
 __pycache__/
 *.pyc
+
+# Markdown files local-only (except README)
+*.md
+!README.md
