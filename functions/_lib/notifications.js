@@ -653,6 +653,7 @@ function formatSignupConfirmationChannelSentence(subscriber) {
 function getSignupConfirmationEmailContent(subscriber, managementUrl) {
   const smsSupported = safelyIsSupportedSmsPhone(subscriber.phone);
   const hasUnsupportedSms = Boolean(subscriber.wantsSms && subscriber.phone && !smsSupported);
+  const hasStripeSubscription = Boolean(subscriber.stripe_customer_id || subscriber.stripeCustomerId);
   const managementLinkText = getManagementLinkText(subscriber);
 
   const bodyLines = ["You're subscribed to Apocalypse Early Warning System.", ""];
@@ -678,6 +679,10 @@ function getSignupConfirmationEmailContent(subscriber, managementUrl) {
   }
 
   bodyLines.push(HOPEFULLY_MESSAGE, "");
+
+  if (hasStripeSubscription) {
+    bodyLines.push("Your credit card statement will show EWS.KYLEMCDONALD.NET", "");
+  }
 
   const footerLines = [managementLinkText, managementUrl, "", "Questions: ews@kylemcdonald.net", "", "Thank you for subscribing,\nKyle"];
   const textLines = [...bodyLines, ...footerLines];
